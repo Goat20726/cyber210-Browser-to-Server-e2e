@@ -39,19 +39,16 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 - [ ] W5 \- Final Paper / Presentation complete   
 - [ ] W6 \- Final demo runs ≤5-10 min twice; deck \+ paper submitted
 
-Team Roles:
-
-Aura : Network Val / Threat   
-Cam: Server / Protocol Lead   
- Fil: Client Lead
-
-## 4. Team roles (3 members; everyone codes)
+## Team roles (3 members; Aura everyone codes)
+- Aura : Red Team   
+- Cam: WebServer  
+- Fil: Browser
 
 | Role | Owns | First task |
 |---|---|---|
-| **Browser** — Member A (Browser Encryption Integration) | Browser HPKE integration (`hpke-js`) + UI | Spike: round-trip an `hpke-js` sender/recipient `seal`/`open` in a console |
-| **WebServer** — Member B (WebServer Encryption Integration) | Server HPKE (`pyhpke`) + WebSocket endpoint; same suite as the client | Spike: round-trip a `pyhpke` `seal`/`open`; echo a plaintext WebSocket message |
-| **Red Team** — Member C | Attack tests, packet captures, the **mitmproxy TLS-vs-E2E demo**; **also runs the weekly checkpoint + repo hygiene** (the PM duties, since you're three); tries to break the other two every week | Spike: capture localhost WebSocket traffic in Wireshark/DevTools; set up repo + tracker |
+| **Browser** — (Browser Encryption Integration) | Browser HPKE integration (`hpke-js`) + UI | Spike: round-trip an `hpke-js` sender/recipient `seal`/`open` in a console |
+| **WebServer** — (WebServer Encryption Integration) | Server HPKE (`pyhpke`) + WebSocket endpoint; same suite as the client | Spike: round-trip a `pyhpke` `seal`/`open`; echo a plaintext WebSocket message |
+| **Red Team** — | Attack tests, packet captures, the **mitmproxy TLS-vs-E2E demo**; **also runs the weekly checkpoint + repo hygiene** (the PM duties, since you're three); tries to break the other two every week | Spike: capture localhost WebSocket traffic in Wireshark/DevTools; set up repo + tracker |
 
 Knowledge Management:
 
@@ -60,26 +57,38 @@ Knowledge Management:
 - [ ] Decision log: every protocol decision (curve, KDF, nonce strategy…) gets 3 lines in   \`docs/decisions.md\` — \*what we chose, what we rejected, why\*.  This will help our final paper  
 
 
-                                   W1     W2     W3     W4     W5     W6
-                                   Jun15  Jun22  Jun29  Jul06  Jul13  Jul20
- Browser    scaffold+plaintext     #####
-            HPKE handshake               #####
-            HPKE seal/open                       #####
-            fix findings                                #####
-            demo UI + slides                                  #####
-            final demo + paper                                       #####
- WebServer  scaffold+plaintext     #####
-            HPKE handshake               #####
-            HPKE seal/open + del plain           #####
-            fix findings                                #####
-            hardening + slides                                #####
-            final demo + paper                                       #####
- Red Team   baseline + mitmproxy   #####
-            handshake/interop test       #####
-            tamper + Scenario C                  #####
-            attack matrix (LEAD)                        #####
-            security eval + reh.#1                            #####
-            TLS-vs-E2E + attack                                      #####
+```
+                                   Week1    Week2    Week3    Week4    Week5    Week6
+                                   Jun15    Jun22    Jun29    Jul06    Jul13    Jul20
+ SHARED / SPEC
+   Toolchain + repo setup          ####.
+   Protocol Spec  v0 -> v1 -> FREEZE ##.##   #####    ####<>
+ BROWSER  (Next.js + hpke-js)
+   Scaffold + plaintext echo       #####
+   HPKE handshake (contexts)                #####
+   HPKE seal/open                                    #####
+   Harden + fix findings                                     #####
+   Demo polish + slides                                               #####
+   Final demo + paper                                                          #####
+ WEBSERVER  (Python / FastAPI)
+   Scaffold + plaintext echo       #####
+   HPKE handshake (contexts)                #####
+   HPKE seal/open                                    #####
+   Harden + fix findings                                     #####
+   Demo polish + slides                                               #####
+   Final demo + paper                                                          #####
+ RED TEAM
+   Baseline + mitmproxy setup      #####
+   Handshake / interop tests                #####
+   Tamper + leak tests                               #####
+   Full attack matrix (LEAD)                                 #####
+   Threat model + paper section                                      #####
+   TLS-vs-E2E + live attack                                                   #####
+ DELIVERABLES
+   Live demo          (rehearse ->)                          .        rr       *FINAL
+   Slide deck                                                         dddd     *FINAL
+   Paper                                                     draft    pppp     *FINAL
 
-   Milestones:  M1^Jun19  M2^Jun26  M3^Jul03  M4^Jul10  M5^Jul17  M6^Jul24
-
+   <> = spec freeze      * = graded deliverable due
+   Milestones:  M1^Jun19   M2^Jun26   M3^Jul03   M4^Jul10   M5^Jul17   M6^Jul24
+```

@@ -57,7 +57,6 @@ Knowledge Management:
 - [ ] Decision log: every protocol decision (curve, KDF, nonce strategy…) gets 3 lines in   \`docs/decisions.md\` — \*what we chose, what we rejected, why\*.  This will help our final paper  
 
 
-```
 | Track / Task | Week1 Jun15 | Week2 Jun22 | Week3 Jun29 | Week4 Jul06 | Week5 Jul13 | Week6 Jul20 |
 |---|---|---|---|---|---|---|
 | **SHARED / SPEC** | | | | | | |
@@ -88,4 +87,3 @@ Knowledge Management:
 | Live demo (rehearse →) | | | | · | rr | ★FINAL |
 | Slide deck | | | | | dddd | ★FINAL |
 | Paper | | | | draft | pppp | ★FINAL |
-```

@@ -3,7 +3,7 @@
 ## **Final Project Operating Document**  
 Cameron Faulkner, Aura Gaines, and Fil Dziembowski
 
-## Problem statement
+### Problem statement
 
 Modern LLM chat apps send your prompt to the server in plaintext (inside TLS, but readable by the server operator, any reverse proxy, and any logging middleware). Privacy gateways like the LLM-VG architecture fix this with an **application-layer end-to-end encrypted channel**: the browser encrypts the prompt *before it leaves the page*, and only the one process that must read it can decrypt (in LLM VG, the redaction supervisor; in your project, a simulated LLM).
 
@@ -14,7 +14,7 @@ The goal is not to build a production LLM gateway or replace TLS. The goal is to
 **Research question we are asking**: How does browser-to-server application-layer encryption change what intermediaries can see compared with TLS alone for sensitive LLM-style prompt traffic?  
 
 
-## What we're building (in one picture)
+### What we're building (in one picture)
 
 ```
    ┌──────────────────────────┐ wss ┌──────────────┐ wss ┌──────────────────────────────┐
@@ -64,7 +64,7 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 - [ ] W5 \- Final Paper / Presentation complete   
 - [ ] W6 \- Final demo runs ≤5-10 min twice; deck \+ paper submitted
 
-## Team roles (3 members; Aura everyone codes)
+### Team roles (3 members; Aura everyone codes)
 - Aura : Red Team   
 - Cam: WebServer  
 - Fil: Browser
@@ -81,6 +81,7 @@ Knowledge Management:
 - [ ] The Adversary lead gets veto power: if an attack they can demonstrate validity then we continue to iterate   
 - [ ] Decision log: every protocol decision (curve, KDF, nonce strategy…) gets 3 lines in   \`docs/decisions.md\` — \*what we chose, what we rejected, why\*.  This will help our final paper  
 
+### Macro Schedule
 
 | Track / Task | Week1 Jun15 | Week2 Jun22 | Week3 Jun29 | Week4 Jul06 | Week5 Jul13 | Week6 Jul20 |
 |---|---|---|---|---|---|---|

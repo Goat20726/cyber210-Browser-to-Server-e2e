@@ -84,32 +84,26 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 
 ### Macro Schedule
 
-| Track / Task | Week1 Jun15 | Week2 Jun22 | Week3 Jun29 | Week4 Jul06 | Week5 Jul13 | Week6 Jul20 |
-|---|---|---|---|---|---|---|
-| **SHARED / SPEC** | | | | | | |
-| Toolchain + repo setup | ●●●●· | | | | | |
-| Protocol Spec v0→v1→FREEZE | ●●·●● | ●●●●● | ●●●● | | | |
-| **BROWSER (Next.js + hpke-js)** | | | | | | |
-| Scaffold + plaintext echo | ●●●●● | | | | | |
-| HPKE handshake (contexts) | | ●●●●● | | | | |
-| HPKE seal/open | | | ●●●●● | | | |
-| Harden + fix findings | | | | ●●●●● | | |
-| Demo polish + slides | | | | | ●●●●● | |
-| Final demo + paper | | | | | | ●●●●● |
-| **WEBSERVER (Python / FastAPI)** | | | | | | |
-| Scaffold + plaintext echo | ●●●●● | | | | | |
-| HPKE handshake (contexts) | | ●●●●● | | | | |
-| HPKE seal/open | | | ●●●●● | | | |
-| Harden + fix findings | | | | ●●●●● | | |
-| Demo polish + slides | | | | | ●●●●● | |
-| Final demo + paper | | | | | | ●●●●● |
-| **RED TEAM** | | | | | | |
-| Baseline + mitmproxy setup | ●●●●● | | | | | |
-| Handshake / interop tests | | ●●●●● | | | | |
-| Tamper + leak tests | | | ●●●●● | | | |
-| Full attack matrix (LEAD) | | | | ●●●●● | | |
-| Threat model + paper section | | | | | ●●●●● | |
-| TLS-vs-E2E + live attack | | | | | | ●●●●● |
+| Track | Task | W1 Jun15 | W2 Jun22 | W3 Jun29 | W4 Jul06 | W5 Jul13 | W6 Jul20 |
+|---|---|---|---|---|---|---|---|
+| **Browser** | scaffold + plaintext | ●●●●● | | | | | |
+| | BIP-39 + auth handshake | | ●●●●● | | | | |
+| | ChaCha20 seal/open | | | ●●●●● | | | |
+| | fix findings | | | | ●●●●● | | |
+| | demo UI + slides | | | | | ●●●●● | |
+| | final demo + paper | | | | | | ●●●●● |
+| **WebServer** | scaffold + plaintext | ●●●●● | | | | | |
+| | HPKE handshake + verify | | ●●●●● | | | | |
+| | ChaCha20 seal/open + del pln | | | ●●●●● | | | |
+| | fix findings | | | | ●●●●● | | |
+| | hardening + slides | | | | | ●●●●● | |
+| | final demo + paper | | | | | | ●●●●● |
+| **Red Team** | baseline + mitmproxy | ●●●●● | | | | | |
+| | handshake/interop + MITM | | ●●●●● | | | | |
+| | tamper + leak + Scenario C | | | ●●●●● | | | |
+| | attack matrix (LEAD) | | | | ●●●●● | | |
+| | security eval + reh. #1 | | | | | ●●●●● | |
+| | TLS-vs-E2E + attack | | | | | | ●●●●● |
 | **DELIVERABLES** | | | | | | |
 | Live demo (rehearse →) | | | | · | XXX | ★FINAL |
 | Slide deck | | | | | XXX | ★FINAL |

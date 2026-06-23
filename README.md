@@ -105,6 +105,6 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 | | security eval + reh. #1 | | | | | ●●●●● | |
 | | TLS-vs-E2E + attack | | | | | | ●●●●● |
 | **DELIVERABLES** | | | | | | |
-| Live demo (rehearse →) | | | | · | XXX | ★FINAL |
-| Slide deck | | | | | XXX | ★FINAL |
-| Paper | | | | draft | XXX | ★FINAL |
+| Live demo (rehearse →) | | | | | |· | XXX | ★FINAL |
+| Slide deck | | | | | || XXX | ★FINAL |
+| Paper | | | || | draft | XXX | ★FINAL |

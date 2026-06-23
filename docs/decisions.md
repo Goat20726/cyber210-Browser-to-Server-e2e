@@ -15,3 +15,17 @@
 - **Rejected:** ECDH→HKDF→GCM
 - **Why:** ECDH→HKDF→GCM is HPKE base mode, composed by hand.  Hand rolling crypto is dangarous and not industry tested that could lead to implementation errors. The library owns the dangerous details — nonce management, suite binding, the key schedule — so fewer subtle ways to be quietly wrong. The short fall is that we're suffering on the learning of implementing custom crypto (I think it's justafiable since this isn't a cryptography course)
 
+### D002 - BIP-39 Derived tenant key vs per-session ephemeral browser key
+- **Chose:** Leaning towards BIP-39 for deriving tenant keys
+- **Rejected:** per-session ephemeral browser key;High State Fragility; Complex Session Handshakes;No Native Data Persistence
+- **Why:** Allows for multiple tenant sessions simultatiously 
+
+### D003 - AES-256-GCM vs ChaCha20-Poly1305 (forward ratchet mechanisms practical implementation safety)
+- **Chose:** ChaCha20-Poly1305 
+- **Rejected:** AES-256-GCM (slower without hardware acceleration)
+- **Why:** when building a real-world system utilizing forward ratchet mechanisms (like the Signal Protocol or Double Ratchet), ChaCha20-Poly1305 is heavily favored by modern cryptographers due to practical implementation safety
+
+### D004 - Handshake authentication Implemented / Handwaved
+- **Chose:** Handshake authentication 
+- **Rejected:** Handwaved
+- **Why:** Make this channel as real world as possible, it's minimal extra work now.

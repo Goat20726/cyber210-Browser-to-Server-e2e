@@ -82,7 +82,8 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 | **Red Team** | Attack tests, packet captures, the **mitmproxy TLS-vs-E2E demo**; **runs the weekly checkpoint + repo hygiene** | Spike: capture localhost WebSocket traffic in Wireshark/DevTools;  |
 | **WebServer** (WebServer Encryption Integration) | Server HPKE (`pyhpke`) + WS endpoint + `GET /pubkey` + signature verify; same suite as the client | Spike: round-trip a `pyhpke` `seal`/`open`; echo a plaintext WebSocket message |
 | **Browser** (Browser Encryption Integration) | Browser HPKE + **BIP-39 identity** + handshake signing + UI (`hpke-js`, Next.js) | Spike: round-trip an `hpke-js` ChaCha20 `seal`/`open` in a console; derive a keypair from a test mnemonic; set up repo + tracker |
-**spike** = a short-term, experimental task focused on research, prototyping, or gathering data rather than writing production-ready code
+
+> **spike** = a short-term, experimental task focused on research, prototyping, or gathering data rather than writing production-ready code
 
 ### Knowledge Management:
 

@@ -34,7 +34,7 @@ Scope: This project focuses on demonstrating how sensitive prompt-like traffic c
 This project includes:
 
 - [ ] Web Page with chat-style UI that echos the text typed by the user  
-- [ ] A web server hosting the page (using Python FastAPI and [Node.js](http://Node.js) with Websocket support)  
+- [ ] A web server hosting the page (using Python FastAPI or [Node.js](http://Node.js) with Websocket support)  
 - [ ] A browser WebCrypto key-agreement handshake, allowing the browser to start an end-to-encryption channel  
 - [ ] An **HPKE** channel using a vetted library (**`hpke-js`** in the browser, **`pyhpke`** on the
   server). Integrating the industry-standard primitive *correctly*, and

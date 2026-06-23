@@ -61,7 +61,7 @@ Knowledge Management:
 |---|---|---|---|---|---|---|
 | **SHARED / SPEC** | | | | | | |
 | Toolchain + repo setup | ●●●●· | | | | | |
-| Protocol Spec v0→v1→FREEZE | ●●·●● | ●●●●● | ●●●●⟨⟩ | | | |
+| Protocol Spec v0→v1→FREEZE | ●●·●● | ●●●●● | ●●●● | | | |
 | **BROWSER (Next.js + hpke-js)** | | | | | | |
 | Scaffold + plaintext echo | ●●●●● | | | | | |
 | HPKE handshake (contexts) | | ●●●●● | | | | |
@@ -84,6 +84,6 @@ Knowledge Management:
 | Threat model + paper section | | | | | ●●●●● | |
 | TLS-vs-E2E + live attack | | | | | | ●●●●● |
 | **DELIVERABLES** | | | | | | |
-| Live demo (rehearse →) | | | | · | rr | ★FINAL |
-| Slide deck | | | | | dddd | ★FINAL |
-| Paper | | | | draft | pppp | ★FINAL |
+| Live demo (rehearse →) | | | | · | XXX | ★FINAL |
+| Slide deck | | | | | XXX | ★FINAL |
+| Paper | | | | draft | XXX | ★FINAL |

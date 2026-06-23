@@ -58,37 +58,34 @@ Knowledge Management:
 
 
 ```
-                                   Week1    Week2    Week3    Week4    Week5    Week6
-                                   Jun15    Jun22    Jun29    Jul06    Jul13    Jul20
- SHARED / SPEC
-   Toolchain + repo setup          ####.
-   Protocol Spec  v0 -> v1 -> FREEZE ##.##   #####    ####<>
- BROWSER  (Next.js + hpke-js)
-   Scaffold + plaintext echo       #####
-   HPKE handshake (contexts)                #####
-   HPKE seal/open                                    #####
-   Harden + fix findings                                     #####
-   Demo polish + slides                                               #####
-   Final demo + paper                                                          #####
- WEBSERVER  (Python / FastAPI)
-   Scaffold + plaintext echo       #####
-   HPKE handshake (contexts)                #####
-   HPKE seal/open                                    #####
-   Harden + fix findings                                     #####
-   Demo polish + slides                                               #####
-   Final demo + paper                                                          #####
- RED TEAM
-   Baseline + mitmproxy setup      #####
-   Handshake / interop tests                #####
-   Tamper + leak tests                               #####
-   Full attack matrix (LEAD)                                 #####
-   Threat model + paper section                                      #####
-   TLS-vs-E2E + live attack                                                   #####
- DELIVERABLES
-   Live demo          (rehearse ->)                          .        rr       *FINAL
-   Slide deck                                                         dddd     *FINAL
-   Paper                                                     draft    pppp     *FINAL
-
-   <> = spec freeze      * = graded deliverable due
-   Milestones:  M1^Jun19   M2^Jun26   M3^Jul03   M4^Jul10   M5^Jul17   M6^Jul24
+| Track / Task | Week1 Jun15 | Week2 Jun22 | Week3 Jun29 | Week4 Jul06 | Week5 Jul13 | Week6 Jul20 |
+|---|---|---|---|---|---|---|
+| **SHARED / SPEC** | | | | | | |
+| Toolchain + repo setup | ●●●●· | | | | | |
+| Protocol Spec v0→v1→FREEZE | ●●·●● | ●●●●● | ●●●●⟨⟩ | | | |
+| **BROWSER (Next.js + hpke-js)** | | | | | | |
+| Scaffold + plaintext echo | ●●●●● | | | | | |
+| HPKE handshake (contexts) | | ●●●●● | | | | |
+| HPKE seal/open | | | ●●●●● | | | |
+| Harden + fix findings | | | | ●●●●● | | |
+| Demo polish + slides | | | | | ●●●●● | |
+| Final demo + paper | | | | | | ●●●●● |
+| **WEBSERVER (Python / FastAPI)** | | | | | | |
+| Scaffold + plaintext echo | ●●●●● | | | | | |
+| HPKE handshake (contexts) | | ●●●●● | | | | |
+| HPKE seal/open | | | ●●●●● | | | |
+| Harden + fix findings | | | | ●●●●● | | |
+| Demo polish + slides | | | | | ●●●●● | |
+| Final demo + paper | | | | | | ●●●●● |
+| **RED TEAM** | | | | | | |
+| Baseline + mitmproxy setup | ●●●●● | | | | | |
+| Handshake / interop tests | | ●●●●● | | | | |
+| Tamper + leak tests | | | ●●●●● | | | |
+| Full attack matrix (LEAD) | | | | ●●●●● | | |
+| Threat model + paper section | | | | | ●●●●● | |
+| TLS-vs-E2E + live attack | | | | | | ●●●●● |
+| **DELIVERABLES** | | | | | | |
+| Live demo (rehearse →) | | | | · | rr | ★FINAL |
+| Slide deck | | | | | dddd | ★FINAL |
+| Paper | | | | draft | pppp | ★FINAL |
 ```

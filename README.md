@@ -71,9 +71,9 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 
 | Role | Owns | First task |
 |---|---|---|
-| **Red Team** — | Attack tests, packet captures, the **mitmproxy TLS-vs-E2E demo**; **also runs the weekly checkpoint + repo hygiene** (the PM duties, since you're three); tries to break the other two every week | Spike: capture localhost WebSocket traffic in Wireshark/DevTools; set up repo + tracker |
-| **WebServer** — (WebServer Encryption Integration) | Server HPKE (`pyhpke`) + WebSocket endpoint; same suite as the client | Spike: round-trip a `pyhpke` `seal`/`open`; echo a plaintext WebSocket message |
-| **Browser** — (Browser Encryption Integration) | Browser HPKE integration (`hpke-js`) + UI | Spike: round-trip an `hpke-js` sender/recipient `seal`/`open` in a console |
+| **Red Team** | Attack tests, packet captures, the **mitmproxy TLS-vs-E2E demo**; **also runs the weekly checkpoint + repo hygiene** (the PM duties, since you're three); tries to break the other two every week | Spike: capture localhost WebSocket traffic in Wireshark/DevTools; set up repo + tracker |
+| **WebServer** (WebServer Encryption Integration) | Server HPKE (`pyhpke`) + WebSocket endpoint; same suite as the client | Spike: round-trip a `pyhpke` `seal`/`open`; echo a plaintext WebSocket message |
+| **Browser** (Browser Encryption Integration) | Browser HPKE integration (`hpke-js`) + UI | Spike: round-trip an `hpke-js` sender/recipient `seal`/`open` in a console |
 
 
 ### Knowledge Management:

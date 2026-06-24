@@ -47,3 +47,6 @@ __pycache__/
 data/
 *.csv
 *.parquet
+
+.vscode/
+nextcloud_sync.sh

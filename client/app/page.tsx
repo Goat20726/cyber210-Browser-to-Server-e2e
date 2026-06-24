@@ -65,7 +65,7 @@ export default function ChatApp() {
 
           const incoming: ChatMessage = {
           // Coerce the sequence number to a string to match your ID type
-          seq: seqRef.current,
+          seq: data.seq,
           // Capture the 'payload' field from your python backend dictionary
           text: data.payload ?? data.text ?? '',              // payload → text
           // Map based on your 'type' field or fallback to assistant

@@ -33,7 +33,7 @@ async def websocket_endpoint(websocket: WebSocket):
             message_data = await websocket.receive_json()
             
             echo_data = {
-                "seq" : message_data.get('seq') + 1,
+                "seq" : message_data.get('seq'),
                 "text": f"{message_data.get('text')} (Echo)",
                 'sender': "assistant",
                 "type": "msg",                

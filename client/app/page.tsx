@@ -4,18 +4,20 @@ import React, { useState, useEffect, useRef } from 'react';
 type Sender = 'user' | 'assistant';
 
 interface ChatMessage {
-  id: string;
+  seq: number;
   text: string;
   sender: Sender;
   timestamp: string;
 }
 
-// Small helper to generate a stable id that survives the round-trip to the
-// server. Sending the id over the wire lets us de-dupe echoed messages.
-const genId = (): string =>
-  typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2) + Date.now().toString(36);
+// Small helper to generate a stable seq that survives the round-trip to the
+// server. Sending the seq over the wire lets us de-dupe echoed messages.
+function createSequence(start = 1) {
+  let current = start;
+  return () => current++;
+}
+
+export const genId = createSequence();
 
 export default function ChatApp() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -62,14 +64,14 @@ export default function ChatApp() {
         setIsTyping(false);
 
         // Echo-server safety: if we already optimistically rendered this
-        // message (same id), skip it instead of duplicating the bubble.
-        if (data.id && messagesRef.current.some((m) => m.id === data.id)) {
+        // message (same seq), skip it instead of duplicating the bubble.
+        if (data.seq && messagesRef.current.some((m) => m.seq === data.seq)) {
           return;
         }
 
           const incoming: ChatMessage = {
           // Coerce the sequence number to a string to match your ID type
-          id: data.seq != null ? `srv-${data.seq}` : genId(), // seq → stable key
+          seq: data.seq != null ? `srv-${data.seq}` : genId(), // seq → stable key
           // Capture the 'payload' field from your python backend dictionary
           text: data.payload ?? data.text ?? '',              // payload → text
           // Map based on your 'type' field or fallback to assistant
@@ -106,7 +108,7 @@ export default function ChatApp() {
     if (!text) return;
 
     const payload: ChatMessage = {
-      id: genId(),
+      seq: genId(),
       text,
       sender: 'user',
       timestamp: new Date().toLocaleTimeString(),
@@ -196,7 +198,7 @@ export default function ChatApp() {
           )}
 
           {messages.map((msg) => (
-            <div key={msg.id} className={`cg-row ${msg.sender}`}>
+            <div key={msg.seq} className={`cg-row ${msg.sender}`}>
               <div className={`cg-avatar ${msg.sender}`}>
                 {msg.sender === 'assistant' ? (
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="none">

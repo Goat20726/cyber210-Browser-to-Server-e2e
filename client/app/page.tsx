@@ -18,7 +18,7 @@ export default function ChatApp() {
   const [isConnected, setIsConnected] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
 
-  const seqRef = useRef<number>(1); 
+  const seqRef = useRef<number>(1);
   // Persist the single socket instance across renders
   const socketRef = useRef<WebSocket | null>(null);
   // Always read the latest message state inside the socket listener
@@ -57,24 +57,30 @@ export default function ChatApp() {
         // A reply landed, so we can stop showing the typing indicator.
         setIsTyping(false);
 
-        // Echo-server safety: if we already optimistically rendered this
-        // message (same seq), skip it instead of duplicating the bubble.
-        if (data.seq && messagesRef.current.some((m) => m.seq === data.seq)) {
+        // Echo-server safety: the echo deliberately shares the SAME seq as the
+        // message we sent. We only skip if an *assistant* echo with this seq is
+        // already rendered — otherwise the echo of our own (user) message would
+        // be dropped and never appear on the opposite side.
+        if (
+          data.seq != null &&
+          messagesRef.current.some(
+            (m) => m.seq === data.seq && m.sender === 'assistant'
+          )
+        ) {
           return;
         }
 
           const incoming: ChatMessage = {
-          // Coerce the sequence number to a string to match your ID type
+          // Keep the backend's sequence number so send + echo share the same seq
           seq: data.seq,
           // Capture the 'payload' field from your python backend dictionary
           text: data.payload ?? data.text ?? '',              // payload → text
           // Map based on your 'type' field or fallback to assistant
           type: data.type != null ? data.type : 'msg',                                // echoes render left
-          sender: data.sender != null ? data.sender : 'assistant',  
+          sender: 'assistant',
           // Safely capture the passed backend timestamp
           timestamp: data.timestamp ?? new Date().toLocaleTimeString(),
         };
-        seqRef.current += 1;
 
         setMessages([...messagesRef.current, incoming]);
       } catch (error) {
@@ -195,8 +201,11 @@ export default function ChatApp() {
             </div>
           )}
 
-          {messages.map((msg) => (
-            <div key={msg.seq} className={`cg-row ${msg.sender}`}>
+          {messages.map((msg, index) => (
+            <div
+              key={`${msg.seq}-${msg.sender}`}
+              className={`cg-row ${msg.sender}`}
+            >
               <div className={`cg-avatar ${msg.sender}`}>
                 {msg.sender === 'assistant' ? (
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="none">

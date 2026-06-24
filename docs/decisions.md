@@ -31,17 +31,24 @@
 - **Why:** Make this channel as real world as possible, it's minimal extra work now.
 
 ### D005 — Threat model & trust boundary ✅
-Chose:    E2E (HPKE, RFC 9180) INSIDE TLS 1.3; defend the prompt against a TLS-terminating
+- Chose:    E2E (HPKE, RFC 9180) INSIDE TLS 1.3; defend the prompt against a TLS-terminating
           mitmproxy by sealing browser→server before the socket.
-Rejected: TLS-only (proxy terminates TLS → reads cleartext); hiding prompt from the server
+- Rejected: TLS-only (proxy terminates TLS → reads cleartext); hiding prompt from the server
           itself (would need TEE/confidential computing — out of scope).
-Why:      The only observer E2E changes is the TLS-terminating middlebox (✓→✗ on content).
+- Why:      The only observer E2E changes is the TLS-terminating middlebox (✓→✗ on content).
           Passive sniffer already handled by TLS; server is a trusted endpoint by design.
           Documented gaps: served-JS/code-delivery, traffic analysis (size/timing).
 
 ### D006 — Threat-model audit vs protocol
-Chose:    Update threat-model.md to match ChaCha20-Poly1305
-Rejected: Leaving the doc as-is (still references AES-GCM, omits active MITM).
-Why:      AEAD is now ChaCha20-Poly1305; adds an authenticated handshake (P8) that
+- Chose:    Update threat-model.md to match ChaCha20-Poly1305
+- Rejected: Leaving the doc as-is (still references AES-GCM, omits active MITM).
+- Why:      AEAD is now ChaCha20-Poly1305; adds an authenticated handshake (P8) that
           defends key-substitution, an attacker the threat model didn't list. Add
           replay/reorder/reflection actors and a traffic-analysis gap.
+
+### D007 — Wire envelope: structured JSON msg{type, seq, <payload>, timestamp}, frozen in PROTOCOL.md
+- Chose:    ✅ (your field names; payload = `text` now, becomes `ct` in W4; seq per-direction)
+- Rejected: ✅ (global single seq counter)
+- Why:      ✅ (forward-compatible: sealing swaps one field; seq/direction already present for
+          W4 replay/order defense; no iv because HPKE owns the nonce)
+

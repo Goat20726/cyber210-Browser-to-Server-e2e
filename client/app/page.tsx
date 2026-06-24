@@ -47,7 +47,7 @@ export default function ChatApp() {
   useEffect(() => {
     // 1. Initialize the WebSocket connection once on mount.
     // Replace with your actual secure WebSocket server URL (e.g., wss://...)
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws');
+    const ws = new WebSocket('ws://10.160.2.20:8000/ws');
     socketRef.current = ws;
 
     // 2. Lifecycle handlers

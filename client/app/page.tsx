@@ -10,28 +10,26 @@ interface ChatMessage {
   timestamp: string;
 }
 
-
-
 export default function ChatApp() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
 
-  const seqRef = useRef<number>(1);
+  // ---- Sequence state -------------------------------------------------------
+  // c2sSeq : next client→server seq to send. You increment it on each send.
+  // lastS2C: highest server→client seq already accepted (a high-water mark).
+  //          Starts at -1 so the very first server frame (seq 0) is accepted.
+  // Both are reset together inside the socket effect on every (re)connect.
+  const c2sSeq = useRef<number>(0);
+  const lastS2C = useRef<number>(-1);
+
   // Persist the single socket instance across renders
   const socketRef = useRef<WebSocket | null>(null);
-  // Always read the latest message state inside the socket listener
-  const messagesRef = useRef<ChatMessage[]>([]);
   // Auto-scroll anchor + textarea handle + typing-indicator timeout
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Keep messagesRef in sync with the state
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
 
   // Smoothly scroll to the newest message / typing indicator
   useEffect(() => {
@@ -39,12 +37,19 @@ export default function ChatApp() {
   }, [messages, isTyping]);
 
   useEffect(() => {
-    // 1. Initialize the WebSocket connection once on mount.
+    // Fresh-session baseline. Both counters reset together on every (re)connect:
+    // a new handshake makes the server's s2cSeq restart from 0, so a stale
+    // lastS2C left at its old high value would reject the ENTIRE new session.
+    // By the time onopen fires ("successful open") these are already at zero.
+    c2sSeq.current = 0; // next c2s seq to send
+    lastS2C.current = -1; // highest s2c seq accepted (nothing yet)
+
+    // Initialize the WebSocket connection once on mount.
     // Replace with your actual secure WebSocket server URL (e.g., wss://...)
     const ws = new WebSocket('ws://localhost:8000/ws');
     socketRef.current = ws;
 
-    // 2. Lifecycle handlers
+    // Lifecycle handlers
     ws.onopen = () => {
       console.log('WebSocket connection established.');
       setIsConnected(true);
@@ -57,32 +62,35 @@ export default function ChatApp() {
         // A reply landed, so we can stop showing the typing indicator.
         setIsTyping(false);
 
-        // Echo-server safety: the echo deliberately shares the SAME seq as the
-        // message we sent. We only skip if an *assistant* echo with this seq is
-        // already rendered — otherwise the echo of our own (user) message would
-        // be dropped and never appear on the opposite side.
-        if (
-          data.seq != null &&
-          messagesRef.current.some(
-            (m) => m.seq === data.seq && m.sender === 'assistant'
-          )
-        ) {
-          return;
-        }
+        // Frames without a seq can't be ordered or de-duplicated — ignore them.
+        if (data.seq == null) return;
 
-          const incoming: ChatMessage = {
+        // ---- lastS2C high-water mark ------------------------------------
+        // Accept a server frame ONLY if its seq is strictly greater than the
+        // highest we've already taken. This one check kills duplicates,
+        // replays and out-of-order/stale frames, and never lets the mark
+        // slide backwards. After a reconnect lastS2C is back at -1, so the
+        // new session's seq 0 is accepted instead of rejected as "old".
+        if (data.seq <= lastS2C.current) return;
+
+        // Passed the gate → advance the mark to this seq.
+        lastS2C.current = data.seq;
+
+        const incoming: ChatMessage = {
           // Keep the backend's sequence number so send + echo share the same seq
           seq: data.seq,
           // Capture the 'payload' field from your python backend dictionary
-          text: data.payload ?? data.text ?? '',              // payload → text
-          // Map based on your 'type' field or fallback to assistant
-          type: data.type != null ? data.type : 'msg',                                // echoes render left
+          text: data.payload ?? data.text ?? '', // payload → text
+          // Map based on your 'type' field or fallback to 'msg'
+          type: data.type != null ? data.type : 'msg', // echoes render left
           sender: 'assistant',
           // Safely capture the passed backend timestamp
           timestamp: data.timestamp ?? new Date().toLocaleTimeString(),
         };
 
-        setMessages([...messagesRef.current, incoming]);
+        // Functional update so back-to-back frames in the same tick can't
+        // clobber each other.
+        setMessages((prev) => [...prev, incoming]);
       } catch (error) {
         console.error('Failed to parse incoming message:', error);
       }
@@ -97,7 +105,7 @@ export default function ChatApp() {
       setIsConnected(false);
     };
 
-    // 3. Clean up on unmount
+    // Clean up on unmount
     return () => {
       if (typingTimeout.current) clearTimeout(typingTimeout.current);
       ws.close();
@@ -108,7 +116,9 @@ export default function ChatApp() {
     e?.preventDefault();
     const text = inputValue.trim();
     if (!text) return;
-    const currentSeq = seqRef.current;
+
+    // Read the current c2s seq, send with it, then increment for the next send.
+    const currentSeq = c2sSeq.current;
 
     const payload: ChatMessage = {
       seq: currentSeq,
@@ -124,7 +134,10 @@ export default function ChatApp() {
       // Optimistically render our own message immediately.
       setMessages((prev) => [...prev, payload]);
       setInputValue('');
-      seqRef.current += 1;
+
+      // Increment the c2s counter only after a successful send.
+      c2sSeq.current += 1;
+
       // Show a typing indicator while we wait for a reply. Clear it on the
       // next inbound message, or fall back to a timeout so it never sticks.
       setIsTyping(true);
@@ -201,7 +214,7 @@ export default function ChatApp() {
             </div>
           )}
 
-          {messages.map((msg, index) => (
+          {messages.map((msg) => (
             <div
               key={`${msg.seq}-${msg.sender}`}
               className={`cg-row ${msg.sender}`}

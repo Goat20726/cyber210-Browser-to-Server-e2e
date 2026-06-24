@@ -46,9 +46,9 @@
           defends key-substitution, an attacker the threat model didn't list. Add
           replay/reorder/reflection actors and a traffic-analysis gap.
 
-### D007 — Wire envelope: structured JSON msg{type, seq, <payload>, timestamp}, frozen in PROTOCOL.md
-- Chose:    ✅ (your field names; payload = `text` now, becomes `ct` in W4; seq per-direction)
-- Rejected: ✅ (global single seq counter)
+### D007 — Wire envelope: structured JSON msg{type, seq, text,sender,timestamp}, frozen in PROTOCOL.md
+- Chose:    ✅ (your field names; payload = `text` now, becomes `ct` in W4; seq -> s2c (server to client))
+- Rejected: ✅ (global single seq counter) 
 - Why:      ✅ (forward-compatible: sealing swaps one field; seq/direction already present for
           W4 replay/order defense; no iv because HPKE owns the nonce)
 

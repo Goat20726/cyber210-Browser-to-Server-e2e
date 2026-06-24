@@ -1,13 +1,13 @@
 ## Message Format
 All incoming and outgoing messages are structured as JSON objects with the following payload: 
-"payload → ct in W4; no iv field, ever.
 {
   "type": "msg",
   "seq": 42,
   "text": "Hello, server!", 
-  "sender": "user"
+  "sender": "user",
   "timestamp" : <time>
 }
+text → ct in W4; no iv field, ever.
 
 ## Field Definitions
 
@@ -21,6 +21,6 @@ All incoming and outgoing messages are structured as JSON objects with the follo
 
 
 ## Server End Points
-/health
-/status
+/api/health
+/api/status
 /ws

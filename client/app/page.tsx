@@ -2,22 +2,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 type Sender = 'user' | 'assistant';
-
 interface ChatMessage {
   seq: number;
   text: string;
+  type: string;
   sender: Sender;
   timestamp: string;
 }
 
-// Small helper to generate a stable seq that survives the round-trip to the
-// server. Sending the seq over the wire lets us de-dupe echoed messages.
-function createSequence(start = 1) {
-  let current = start;
-  return () => current++;
-}
 
-export const genId = createSequence();
 
 export default function ChatApp() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -25,6 +18,7 @@ export default function ChatApp() {
   const [isConnected, setIsConnected] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
 
+  const seqRef = useRef<number>(1); 
   // Persist the single socket instance across renders
   const socketRef = useRef<WebSocket | null>(null);
   // Always read the latest message state inside the socket listener
@@ -47,7 +41,7 @@ export default function ChatApp() {
   useEffect(() => {
     // 1. Initialize the WebSocket connection once on mount.
     // Replace with your actual secure WebSocket server URL (e.g., wss://...)
-    const ws = new WebSocket('ws://10.160.2.20:8000/ws');
+    const ws = new WebSocket('ws://localhost:8000/ws');
     socketRef.current = ws;
 
     // 2. Lifecycle handlers
@@ -71,14 +65,16 @@ export default function ChatApp() {
 
           const incoming: ChatMessage = {
           // Coerce the sequence number to a string to match your ID type
-          seq: data.seq != null ? `srv-${data.seq}` : genId(), // seq → stable key
+          seq: seqRef.current,
           // Capture the 'payload' field from your python backend dictionary
           text: data.payload ?? data.text ?? '',              // payload → text
           // Map based on your 'type' field or fallback to assistant
-          sender: 'assistant',                                // echoes render left
+          type: data.type != null ? data.type : 'msg',                                // echoes render left
+          sender: data.sender != null ? data.sender : 'assistant',  
           // Safely capture the passed backend timestamp
           timestamp: data.timestamp ?? new Date().toLocaleTimeString(),
         };
+        seqRef.current += 1;
 
         setMessages([...messagesRef.current, incoming]);
       } catch (error) {
@@ -106,10 +102,12 @@ export default function ChatApp() {
     e?.preventDefault();
     const text = inputValue.trim();
     if (!text) return;
+    const currentSeq = seqRef.current;
 
     const payload: ChatMessage = {
-      seq: genId(),
+      seq: currentSeq,
       text,
+      type: 'msg',
       sender: 'user',
       timestamp: new Date().toLocaleTimeString(),
     };
@@ -120,7 +118,7 @@ export default function ChatApp() {
       // Optimistically render our own message immediately.
       setMessages((prev) => [...prev, payload]);
       setInputValue('');
-
+      seqRef.current += 1;
       // Show a typing indicator while we wait for a reply. Clear it on the
       // next inbound message, or fall back to a timeout so it never sticks.
       setIsTyping(true);

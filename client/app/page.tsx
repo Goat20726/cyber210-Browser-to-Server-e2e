@@ -258,7 +258,7 @@ export default function ChatApp() {
               value={inputValue}
               onChange={handleInput}
               onKeyDown={handleKeyDown}
-              placeholder="Message Nova…"
+              placeholder="Message Borealis…"
               className="cg-input"
             />
             <button

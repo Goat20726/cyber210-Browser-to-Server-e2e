@@ -23,7 +23,7 @@
 ### D003 - AES-256-GCM vs ChaCha20-Poly1305 (forward-ratchet mechanisms; practical implementation safety) ✅
 - **Chose:** ChaCha20-Poly1305
 - **Rejected:** AES-256-GCM (slower without hardware acceleration)
-- **Why:** When building a real-world system that uses forward-ratchet mechanisms (like the Signal Protocol or Double Ratchet), ChaCha20-Poly1305 is heavily favored by modern cryptographers because of its practical implementation safety.
+- **Why:** When building a real-world system that uses forward-ratchet mechanisms (like the Signal Protocol or Double Ratchet), ChaCha20-Poly1305 is heavily favored by modern cryptographers because of its practical implementation safety.  ChaCha20-Poly1305 inherently resists timing attacks and catastrophic failure from initialization vector (IV) reuse in software-based environments.
 
 ### D004 - Handshake authentication: implemented vs hand-waved ✅
 - **Chose:** Handshake authentication

@@ -117,3 +117,29 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 | Live demo (rehearse →) | | | | | |· | XXX | ★FINAL |
 | Slide deck | | | | | || XXX | ★FINAL |
 | Paper | | | || | draft | XXX | ★FINAL |
+
+
+### Project Basic Setup
+```
+cyber210-Browser-to-Server-e2e/
+├── client
+├── docs
+├── evidence
+├── scripts
+└── server
+```
+#### Run the browser client 
+```
+cd client
+npm install
+npm run dev          
+http://localhost:3000
+```
+#### Run the web server
+```
+cd server
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt          # or: pip install "fastapi[standard]" "uvicorn[standard]"
+uvicorn main:app --reload --port 8000
+http://localhost:8000/api/health
+```

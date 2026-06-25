@@ -129,14 +129,17 @@ cyber210-Browser-to-Server-e2e/
 └── server
 ```
 #### Run the browser client 
->cd client
->npm install
->npm run dev          
->http://localhost:3000
-
+```
+cd client
+npm install
+npm run dev          
+http://localhost:3000
+```
 #### Run the web server
+```
 > cd server
 > python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
 > pip install -r requirements.txt          # or: pip install "fastapi[standard]" "uvicorn[standard]"
 > uvicorn main:app --reload --port 8000
 > http://localhost:8000/api/health
+```

@@ -52,3 +52,8 @@
 - Why:      ✅ (forward-compatible: sealing swaps one field; seq/direction already present for
           W4 replay/order defense; no iv because HPKE owns the nonce)
 
+### D008 — Served-JS exhibit: out-of-band code-integrity check (demo only)
+- Chose:    ___ (Tier 0 hash-on-slide, Tier 1 Tauri local binary)
+- Rejected: java script currupt channel as out of scope for this demo
+- Why:      There is no point in showing how to secure the data channel if the code-delivery channel can be easily 
+            manipulated by the same threat. 

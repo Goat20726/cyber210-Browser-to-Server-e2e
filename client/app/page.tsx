@@ -159,12 +159,17 @@ export default function ChatApp() {
     // lastS2C left at its old high value would reject the ENTIRE new session.
     // By the time onopen fires ("successful open") these are already at zero.
     c2sSeq.current = 0;   // next c2s seq to send
-    lastS2C.current = -1; // highest s2c seq accepted (nothing yet)
+    lastS2C.current = -1; // highest s2c seq accepted (nothing yet) 
 
     // Initialize the WebSocket connection once on mount.
     // Replace with your actual secure WebSocket server URL (e.g., wss://...)
     // (This line opens the "phone line" to the server.)
-    const ws = new WebSocket('ws://localhost:8000/ws');
+    const wsBase =
+      process.env.NEXT_PUBLIC_WS_URL ??
+      (typeof window !== 'undefined' && window.location.protocol === 'https:'
+        ? `wss://${window.location.host}`
+        : 'ws://localhost:8000');
+    const ws = new WebSocket(`${wsBase}/ws`);
     socketRef.current = ws; // remember it so other functions can use it later
 
     // ---- Lifecycle handlers --------------------------------------------------

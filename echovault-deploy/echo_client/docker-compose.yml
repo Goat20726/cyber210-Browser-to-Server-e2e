@@ -1,0 +1,21 @@
+services:
+  # Service name "client" → DNS name the proxy routes to (client:3000).
+  client:
+    image: echo_client:1.0
+    build:
+      context: .
+      args:
+        # Browser will open its WebSocket here (through the proxy, over TLS).
+        NEXT_PUBLIC_WS_URL: wss://echo.server.test
+    container_name: echo_client
+    restart: unless-stopped
+    # No host ports: ingress is mitmproxy only. Uncomment for local debugging:
+    # ports:
+    #   - "3000:3000"
+    networks:
+      - proxynet
+
+networks:
+  proxynet:
+    external: true
+    name: proxynet

@@ -50,3 +50,11 @@ data/
 
 .vscode/
 nextcloud_sync.sh
+
+# NEVER PUBLISH KEYS
+
+*/ca.key
+*/echovault.key
+echovault.pem
+*.pem
+*.key

@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BOX="${BOX:-172.16.165.17}"
+BOX="${BOX:-10.188.199.221}"
 USER="${SSH_USER:-$USER}"
 
 echo "[*] Saving images to echovault-images.tar ..."
@@ -12,8 +12,16 @@ docker save echo_server:1.0 echo_client:1.0 mitmproxy/mitmproxy:latest \
   -o echovault-images.tar
 echo "    $(du -h echovault-images.tar | cut -f1) written."
 
-echo "[*] Generating TLS certs locally (so ca.crt ships with the bundle) ..."
-bash ./mitmproxy/gen-certs.sh
+# Certs are generated ONCE and committed to the repo — we REUSE them here so we
+# never invalidate the team's installed trust on a rebuild/ship. Only bootstrap
+# them if they're missing (first-ever run). To deliberately reissue, run
+# gen-certs.sh yourself with FORCE=1 (leaf) or FORCE_CA=1 (new CA) and commit.
+if [[ -f ./mitmproxy/certs/echovault.pem && -f ./mitmproxy/certs/ca.crt ]]; then
+  echo "[*] Reusing committed TLS certs in ./mitmproxy/certs (no regeneration)."
+else
+  echo "[!] No certs found — bootstrapping ONCE. Commit ./mitmproxy/certs after this."
+  bash ./mitmproxy/gen-certs.sh
+fi
 
 echo "[*] Copying image tarball to ${USER}@${BOX}:/tmp/ ..."
 scp echovault-images.tar "${USER}@${BOX}:/tmp/"

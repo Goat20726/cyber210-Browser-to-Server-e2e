@@ -86,7 +86,7 @@ Bundle layout (mirrors the final `/opt`):
 
 ```
 opt/
-├── echo_server/   Dockerfile, docker-compose.yml, requirements.txt
+├── echo_server/   Dockerfile, docker-compose.yml, main.py, requirements.txt
 ├── echo_client/   Dockerfile, .dockerignore, docker-compose.yml   (+ you add the Next.js source)
 └── mitmproxy/     docker-compose.yml, route.py, gen-certs.sh
 scripts/
@@ -106,6 +106,26 @@ scripts/
 - The EchoVault repo checked out locally (you need the `client/` source to build
   its image). On Windows, clone it **inside** WSL2.
 
+---
+
+## Step 0 — One-time client code change (WebSocket target)
+
+In `client/app/page.tsx`, replace the hardcoded socket line:
+
+```ts
+const ws = new WebSocket('ws://localhost:8000/ws');
+```
+with the env-driven version (baked to `wss://echo.server.test` by the Dockerfile):
+```ts
+const wsBase =
+  process.env.NEXT_PUBLIC_WS_URL ??
+  (typeof window !== 'undefined' && window.location.protocol === 'https:'
+    ? `wss://${window.location.host}`
+    : 'ws://localhost:8000');
+const ws = new WebSocket(`${wsBase}/ws`);
+```
+
+---
 
 ## Step 1 — Stage the three folders locally
 
@@ -118,41 +138,55 @@ cp -r /path/to/bundle/scripts ~/echovault-deploy/
 
 # Add the Next.js source into the client build context:
 cp -r /path/to/repo/client/.   ~/echovault-deploy/echo_client/
-# Add main.py + requirements.txt to echo_server
-cp -r /path/to/repo/server/main.py ~/echovault-deploy/echo_server/
-cp -r /path/to/repo/server/requirements.txt ~/echovault-deploy/echo_server/
+# echo_server already ships main.py + requirements.txt
 ```
 
 ---
 
-## Step 2 — Generate the TLS certificate + CA   → DO THIS ONCE, THEN PUBLISH `ca.crt`
+## Step 2 — Generate the TLS cert + CA **ONCE**, commit it, reuse it forever
+
+One person runs this **a single time**, commits the whole `certs/` directory, and
+the entire team reuses it. After that, `gen-certs.sh` is a **no-op** (it detects
+existing certs and reuses them), and `02-save-and-ship.sh` ships the committed
+certs without regenerating — so you can change code and rebuild every week
+**without ever re-cutting certs or re-installing trust**.
 
 🐧🪟 Run in bash (Linux or WSL2 Ubuntu):
 
 ```bash
 cd ~/echovault-deploy/mitmproxy
-./gen-certs.sh
+./gen-certs.sh                 # first run: generates; later runs: reuse (no-op)
+git add certs && git commit -m "EchoVault test certs (CA + leaf) — shared, reused"
 ```
 
 This creates `./certs/`:
 
 | File | What it is | Where it goes |
 |---|---|---|
-| `ca.crt` | the test **CA** (public) | **distribute** — install in each browser |
-| `ca.key` | the CA **private key** | **secret — never distribute / never commit** |
-| `echovault.pem` | key + leaf + chain | used by mitmproxy (`--certs`) |
+| `ca.crt` | the test **CA** | install in each browser (Step 6); also commit so teammates can |
+| `ca.key` | the CA **private key** | committed too (see note) — used only to reissue the leaf |
+| `echovault.pem` | key + leaf + CA chain | used by mitmproxy (`--certs`) |
 | `echovault.crt` | the leaf cert | reference only |
 
 **The cert is name-only and location-independent.** It carries only
 `DNS:echo.client.test, DNS:echo.server.test` — no IP — so the *same* cert is valid
 wherever those names resolve (localhost, the ZeroTier IP, a future IP). You do
-**not** rebuild certs when the box IP changes. The CA is also stable across runs
-(re-running reuses `ca.key`/`ca.crt`), so trust you've installed keeps working.
+**not** rebuild certs when the box IP changes; you only would if the *hostnames*
+change.
 
-> **Publishing the CA:** committing **`ca.crt`** to the repo under `/pubkeys` so
-> teammates can install it is fine — it's public. **Never** commit `ca.key`
-> (anyone with it can mint trusted certs for anything). Add `*/ca.key` and
-> `*/echovault.key`/`echovault.pem` to `.gitignore`.
+> **Commit the whole `certs/` directory (keys included) for this project.** These
+> are throwaway test keys for a self-contained, enclosed echo system — there is
+> nothing sensitive to protect, and committing them means the team never has to
+> regenerate or re-trust. The one thing to understand: anyone who has `ca.key`
+> **and** whom a victim has been convinced to install this CA could MITM that
+> victim — so keep this CA installed **only** on the test machines and remove it
+> when the demo is done (Teardown). It is not a general-purpose root.
+>
+> **Regenerating is opt-in and rarely needed** (`gen-certs.sh` reuses by default):
+> - `FORCE=1 ./gen-certs.sh` — reissue the **leaf** only; the **CA stays the
+>   same**, so installed trust keeps working (no reinstall). Commit the new leaf.
+> - `FORCE_CA=1 ./gen-certs.sh` — mint a **brand-new CA**; everyone must reinstall
+>   `ca.crt`. Only do this if the CA key is ever exposed beyond the team.
 
 ---
 
@@ -174,8 +208,11 @@ cd ~/echovault-deploy
 BOX=10.188.199.221 SSH_USER=youruser ./scripts/02-save-and-ship.sh
 ```
 
-`docker save`s all three images to `echovault-images.tar`, ships it + the compose
-files + `certs/` + `route.py` to `/tmp/echovault/` on the box.
+`docker save`s all three images to `echovault-images.tar` and ships it + the
+compose files + the **committed** `certs/` + `route.py` to `/tmp/echovault/` on
+the box. It **reuses** the existing certs (no regeneration); it only bootstraps
+them if `certs/` is missing entirely (first-ever run). So re-shipping after a code
+change never disturbs the team's installed trust.
 🪟 On Windows do this from WSL2 (it uses `scp`/`ssh`).
 
 ---

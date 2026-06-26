@@ -126,7 +126,7 @@ cp -r /path/to/repo/server/requirements.txt ~/echovault-deploy/echo_server/
 
 ---
 
-## Step 2 — Generate the TLS cert + CA **ONCE**, commit it, reuse it forever
+## Step 2 — Generate the TLS cert + CA **ONCE**, commit it, reuse it forever (should be done skip step)
 
 One person runs this **a single time**, commits the whole `certs/` directory, and
 the entire team reuses it. After that, `gen-certs.sh` is a **no-op** (it detects
@@ -198,6 +198,14 @@ them if `certs/` is missing entirely (first-ever run). So re-shipping after a co
 change never disturbs the team's installed trust.
 🪟 On Windows do this from WSL2 (it uses `scp`/`ssh`).
 
+**No SSH key set up? That's fine — you'll type your password just once.** The
+script opens a single shared SSH connection (multiplexing) and reuses it for all
+five transfers, so you're not prompted repeatedly. Options:
+- **Password (default):** just run it; enter the box password at the one prompt.
+- **Passwordless:** `ssh-copy-id $SSH_USER@10.188.199.221` once, then no prompt.
+- **Fully unattended:** install `sshpass` and run
+  `SSHPASS='thepassword' BOX=10.188.199.221 SSH_USER=youruser ./scripts/02-save-and-ship.sh`.
+  
 ---
 
 ## Step 5 — Deploy on the box

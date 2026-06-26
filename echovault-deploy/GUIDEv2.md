@@ -108,25 +108,6 @@ scripts/
 
 ---
 
-## Step 0 — One-time client code change (WebSocket target)
-
-In `client/app/page.tsx`, replace the hardcoded socket line:
-
-```ts
-const ws = new WebSocket('ws://localhost:8000/ws');
-```
-with the env-driven version (baked to `wss://echo.server.test` by the Dockerfile):
-```ts
-const wsBase =
-  process.env.NEXT_PUBLIC_WS_URL ??
-  (typeof window !== 'undefined' && window.location.protocol === 'https:'
-    ? `wss://${window.location.host}`
-    : 'ws://localhost:8000');
-const ws = new WebSocket(`${wsBase}/ws`);
-```
-
----
-
 ## Step 1 — Stage the three folders locally
 
 🐧🪟 Same commands (run them in your bash shell — Linux terminal or WSL2 Ubuntu):
@@ -138,7 +119,9 @@ cp -r /path/to/bundle/scripts ~/echovault-deploy/
 
 # Add the Next.js source into the client build context:
 cp -r /path/to/repo/client/.   ~/echovault-deploy/echo_client/
-# echo_server already ships main.py + requirements.txt
+# Add main.py + requirements.txt to echo_server
+cp -r /path/to/repo/server/main.py ~/echovault-deploy/echo_server/
+cp -r /path/to/repo/server/requirements.txt ~/echovault-deploy/echo_server/
 ```
 
 ---

@@ -17,28 +17,33 @@ The goal is not to build a production LLM gateway or replace TLS. The goal is to
 ### What we're building (in one picture)
 
 ```
+EchoVault — current architecture (v3): BIP-39 identity · authenticated HPKE · ChaCha20-Poly1305, inside TLS
+
    ┌──────────────────────────┐ wss ┌──────────────┐ wss ┌──────────────────────────────┐
-   │ BROWSER (Next.js client) │────▶│  mitmproxy   │────▶│ WEBSERVER (Python / FastAPI) │
-   │ HPKE (RFC 9180) sealing   │ TLS │ TLS-terminat-│ TLS │ Simulated "LLM": decrypts,   │
-   │ seals prompt IN THE PAGE  │◀────│ ing  MITM    │◀────│ echoes "ECHO: <prompt>"      │
+   │ BROWSER (Next.js / Node) │────▶│  mitmproxy   │────▶│ WEBSERVER (Python / FastAPI) │
+   │ BIP-39 keys · hpke-js    │ TLS │ TLS-terminat-│ TLS │ pyhpke: verify sig, opens,   │
+   │ seals prompt IN THE PAGE │◀────│ ing  MITM    │◀────│ echoes "ECHO: <prompt>"      │
    └──────────────────────────┘     └──────┬───────┘     └──────────────────────────────┘
                                            │ sees the TLS-decrypted payload:
-                                           │   E2E OFF → prompt in CLEARTEXT   (TLS alone fails)
-                                           │   E2E ON  → CIPHERTEXT only        (E2E defeats the MITM)
+                                           │   E2E OFF → prompt in CLEARTEXT       (TLS alone fails)
+                                           │   E2E ON  → { enc, ct } CIPHERTEXT    (E2E defeats the MITM)
+                                           │   swap /pubkey key → SIG VERIFY FAILS (auth handshake · T11)
               ┌──────────── RED TEAM ──────┘
-              └ captures the wire · runs the mitmproxy TLS-vs-E2E exhibit · owns the attack suite
+              └ captures the wire · runs the mitmproxy TLS-vs-E2E exhibit (A→B→C) · owns the attack suite
 ```
 
 Scope: This project focuses on demonstrating how sensitive prompt-like traffic changes as it moves through three security models: plaintext traffic, TLS-protected traffic, and TLS plus browser-to-server application-layer encryption. We will use a simple browser chat interface and echo server as a stand-in for LLM prompt traffic so the project stays focused on network security, traffic visibility, encryption boundaries, and threat modeling. 
 
 This project includes:
 
-- [ ] Web Page with chat-style UI that echos the text typed by the user  
-- [ ] A web server hosting the page (using Python FastAPI or [Node.js](http://Node.js) with Websocket support)  
+- [ ] A **Node.js (Next.js/React)** chat-style web page.
+- [ ] A **Python FastAPI** server that accepts a WebSocket connection (and serves `GET /pubkey`). 
 - [ ] A browser WebCrypto key-agreement handshake, allowing the browser to start an end-to-encryption channel  
 - [ ] An **HPKE** channel using a vetted library (**`hpke-js`** in the browser, **`pyhpke`** on the
   server). Integrating the industry-standard primitive *correctly*, and
   understanding what it does (KEM / key schedule / AEAD / AAD), *is* the learning objective.
+- [ ] **BIP-39 browser identity:** a 24-word mnemonic → HKDF tree → X25519 (HPKE recipient) + Ed25519
+  (signing) keypairs, derived **in the page**, private keys non-extractable.
 - [ ] Authenticated encryption of every message in **both directions** (HPKE seal/open).
 - [ ] Protection against **tampering, replay, and reflection** — and tests that prove each.
 - [ ] TLS Certificates for the web server  
@@ -50,10 +55,13 @@ This project includes:
 
 This project does not attempt to build a production LLM gateway or connect to a real LLM provider; the echo server is used to keep the demo simple and focused on network security. 
 
-**Stretch goals (only if Week 4 checkpoint is green):** untrusted-relay demo, **multi-recipient
-HPKE seal** (`{server, second-recipient}`, the Morphex `{supervisor, tenant_envelope}` shape),
-**ChaCha20-Poly1305** AEAD to match Morphex exactly, epoch-rotating the server recipient key for
-forward secrecy, vendoring `hpke-js` for an offline demo.
+**Stretch goals (only if Week 4 checkpoint is green):**
+- **Headline — Forward-secrecy epoch ratchet:** rotate the recipient key material on a
+  schedule so a stolen static key can't decrypt recorded traffic (restores the forward secrecy that a
+  static BIP-39 recipient key trades away).
+- Multi-recipient HPKE seal (`{server, second-recipient}`, the VG `{supervisor, tenant}` shape);
+  post-quantum hybrid X25519+ML-KEM-768; vendoring `hpke-js` for an offline demo; WebAuthn-gated
+  mnemonic unlock; an untrusted-relay demo.
 
 Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 
@@ -71,10 +79,11 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 
 | Role | Owns | First task |
 |---|---|---|
-| **Red Team** | Attack tests, packet captures, the **mitmproxy TLS-vs-E2E demo**; **also runs the weekly checkpoint + repo hygiene** (the PM duties / red team); | Spike: capture localhost WebSocket traffic in Wireshark/DevTools |
-| **WebServer** (WebServer Encryption Integration) | Server HPKE (`pyhpke`) + WebSocket endpoint; same suite as the client | Spike: round-trip a `pyhpke` `seal`/`open`; echo a plaintext WebSocket message |
-| **Browser** (Browser Encryption Integration) | Browser HPKE integration (`hpke-js`) + UI | Spike: round-trip an `hpke-js` sender/recipient `seal`/`open` in a console; set up repo + tracker|
+| **Red Team** | Attack tests, packet captures, the **mitmproxy TLS-vs-E2E demo**; **runs the weekly checkpoint + repo hygiene** | Spike: capture localhost WebSocket traffic in Wireshark/DevTools;  |
+| **WebServer** (WebServer Encryption Integration) | Server HPKE (`pyhpke`) + WS endpoint + `GET /pubkey` + signature verify; same suite as the client | Spike: round-trip a `pyhpke` `seal`/`open`; echo a plaintext WebSocket message |
+| **Browser** (Browser Encryption Integration) | Browser HPKE + **BIP-39 identity** + handshake signing + UI (`hpke-js`, Next.js) | Spike: round-trip an `hpke-js` ChaCha20 `seal`/`open` in a console; derive a keypair from a test mnemonic; set up repo + tracker |
 
+> **spike** = a short-term, experimental task focused on research, prototyping, or gathering data rather than writing production-ready code
 
 ### Knowledge Management:
 
@@ -84,33 +93,53 @@ Deliverables per week (6 Weeks) 25 JUL (giving us \~2 week fluff):
 
 ### Macro Schedule
 
-| Track / Task | Week1 Jun15 | Week2 Jun22 | Week3 Jun29 | Week4 Jul06 | Week5 Jul13 | Week6 Jul20 |
-|---|---|---|---|---|---|---|
-| **SHARED / SPEC** | | | | | | |
-| Toolchain + repo setup | ●●●●· | | | | | |
-| Protocol Spec v0→v1→FREEZE | ●●·●● | ●●●●● | ●●●● | | | |
-| **BROWSER (Next.js + hpke-js)** | | | | | | |
-| Scaffold + plaintext echo | ●●●●● | | | | | |
-| HPKE handshake (contexts) | | ●●●●● | | | | |
-| HPKE seal/open | | | ●●●●● | | | |
-| Harden + fix findings | | | | ●●●●● | | |
-| Demo polish + slides | | | | | ●●●●● | |
-| Final demo + paper | | | | | | ●●●●● |
-| **WEBSERVER (Python / FastAPI)** | | | | | | |
-| Scaffold + plaintext echo | ●●●●● | | | | | |
-| HPKE handshake (contexts) | | ●●●●● | | | | |
-| HPKE seal/open | | | ●●●●● | | | |
-| Harden + fix findings | | | | ●●●●● | | |
-| Demo polish + slides | | | | | ●●●●● | |
-| Final demo + paper | | | | | | ●●●●● |
-| **RED TEAM** | | | | | | |
-| Baseline + mitmproxy setup | ●●●●● | | | | | |
-| Handshake / interop tests | | ●●●●● | | | | |
-| Tamper + leak tests | | | ●●●●● | | | |
-| Full attack matrix (LEAD) | | | | ●●●●● | | |
-| Threat model + paper section | | | | | ●●●●● | |
-| TLS-vs-E2E + live attack | | | | | | ●●●●● |
+| Track | Task | W1 Jun15 | W2 Jun22 | W3 Jun29 | W4 Jul06 | W5 Jul13 | W6 Jul20 |
+|---|---|---|---|---|---|---|---|
+| **Browser** | scaffold + plaintext | ●●●●● | | | | | |
+| | BIP-39 + auth handshake | | ●●●●● | | | | |
+| | ChaCha20 seal/open | | | ●●●●● | | | |
+| | fix findings | | | | ●●●●● | | |
+| | demo UI + slides | | | | | ●●●●● | |
+| | final demo + paper | | | | | | ●●●●● |
+| **WebServer** | scaffold + plaintext | ●●●●● | | | | | |
+| | HPKE handshake + verify | | ●●●●● | | | | |
+| | ChaCha20 seal/open + del pln | | | ●●●●● | | | |
+| | fix findings | | | | ●●●●● | | |
+| | hardening + slides | | | | | ●●●●● | |
+| | final demo + paper | | | | | | ●●●●● |
+| **Red Team** | baseline + mitmproxy | ●●●●● | | | | | |
+| | handshake/interop + MITM | | ●●●●● | | | | |
+| | tamper + leak + Scenario C | | | ●●●●● | | | |
+| | attack matrix (LEAD) | | | | ●●●●● | | |
+| | security eval + reh. #1 | | | | | ●●●●● | |
+| | TLS-vs-E2E + attack | | | | | | ●●●●● |
 | **DELIVERABLES** | | | | | | |
-| Live demo (rehearse →) | | | | · | XXX | ★FINAL |
-| Slide deck | | | | | XXX | ★FINAL |
-| Paper | | | | draft | XXX | ★FINAL |
+| Live demo (rehearse →) | | | | | |· | XXX | ★FINAL |
+| Slide deck | | | | | || XXX | ★FINAL |
+| Paper | | | || | draft | XXX | ★FINAL |
+
+
+### Project Basic Setup
+```
+cyber210-Browser-to-Server-e2e/
+├── client
+├── docs
+├── evidence
+├── scripts
+└── server
+```
+#### Run the browser client 
+```
+cd client
+npm install
+npm run dev          
+http://localhost:3000
+```
+#### Run the web server
+```
+cd server
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt          # or: pip install "fastapi[standard]" "uvicorn[standard]"
+uvicorn main:app --reload --port 8000
+http://localhost:8000/api/health
+```

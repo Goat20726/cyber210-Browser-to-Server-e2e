@@ -41,7 +41,15 @@ yarn-error.log*
 next-env.d.ts
 
 .venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+data/
+*.csv
+*.parquet
+
+.vscode/
+nextcloud_sync.sh
 node_modules/
 .next/
 echovault-deploy/
-

@@ -21,6 +21,13 @@ text → ct in W4; no iv field, ever.
 | sender | string | User or Assistant. |
 | timestamp | datetime | Timestamp |
 
+## HKPE
+Salt = 65b9295c885b667d3ce7d06afaee50edabb816af6f3b64a763d6b75201e6ed95
+info_x25519 = echovault-x25519-encryption
+info_ed25519 = echovault-ed25519-signing
+### WebCrypto using raw scalar
+
+
 
 ## Server End Points
 /api/health

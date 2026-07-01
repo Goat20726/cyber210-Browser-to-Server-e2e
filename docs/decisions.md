@@ -64,7 +64,7 @@ Why:      ✅ recoverable, escrow-free, human-transferable identity; cost = stat
 Chose:    ___ (mnemonicToSeed; standard params untouched; empty passphrase for the demo)
 Rejected: ___ (custom iterations/salt/hash; using a passphrase in the demo flow)
 Why:      ___ (24 words cannot derive a key directly because they're the wrong shape; but the same words must 
-            reproduce the same seed on any compliant implementation between Cam and I and if the user logs onto a new laptop and enters 4-word mnemonic we need to be able to regenerate the same keys)
+            reproduce the same seed on any compliant implementation between Cam and I and if the user logs onto a new laptop and enters 24-word mnemonic we need to be able to regenerate the same keys)
 
 ### D011 — Key tree: HKDF-SHA256 fork with domain-separated info, NOT BIP-32/SLIP-0010
 Chose:    ___ (two HKDF-SHA256 calls off the 64-byte seed; distinct info per key, e.g.
@@ -86,3 +86,15 @@ Chose:    🔁 (freeze suite + derivation values + AAD encoding + transcript byt
 Rejected: ✅ (write handshake first, reconcile encodings at interop)
 Why:      ✅ (must agree on protocol convention between two different languages and developers that are working 
             remote Cheaper to catch in doc review than at interop.)
+
+### D014 — Let HPKE ctx.seal / ctx.open own the nonce and internal counter 
+Chose:    __ Chose to let HPKE internal libraries handle nonce and internal counter
+Rejected: ✅ Generating nonce counter organically to avoid nonce reuse bug.
+Why:      ✅ Pro: 
+                - HPKE guarantees a unique, monotonic nonce per seal
+                - Idiomatic → portable. seal/open is the RFC 9180 context API present in every HPKE lib (hpke-js, pyhpke, Go, Rust).
+                - Nothing redundant/secret on the wire
+            Cons:
+                - Strict in-order delivery per direction becomes a hard requirement.
+                - No stateless / random-access decryption
+                - Per-context message ceiling. HPKE refuses to seal past its message limit; a very long-lived link must rotate with a fresh enc + hello/server_hello

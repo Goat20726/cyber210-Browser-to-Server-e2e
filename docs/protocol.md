@@ -1,11 +1,11 @@
 # EchoVault - Protocol Specification
 
-*HPKE suite:** `DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305`
+*HPKE suite:* `DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305`
 (RFC 9180 HPKE, base mode).
 
-This document is the single source of truth for byte layouts, encodings, and
-key derivation so two independent implementations (browser + server); both were run 
-end-to-end and a **Python-sealed message opens in Node with byte-identical derived identities**.
+This document is the single source of truth for byte layouts, encoding, and
+key derivation for two independent implementations (browser + server); designed so 
+that a Node-sealed message opens in python and vice versa.
 
 Architecture context (KB `threat-model.md`): L4 is "RFC 9180 HPKE using X25519,
 HKDF-SHA-256, and ChaCha20-Poly1305"; the handshake "binds key material to a
@@ -24,6 +24,10 @@ The following are frozen decisions you must paste in verbatim.
 | 2 | X25519 `info` string | `"echovault-x25519-encryption"` | D011 |
 | 3 | Ed25519 `info` string | `"echovault-ed25519-signing"` | D011 |
 | 4 | Direction tokens | `"c2s"` / `"s2c"` | D013/handshake |
+| 5 | HPKE Info        |      `info = "echovault/hpke/v1"`  |      |
+| 6 | Transcript layout pubkey |  "echovault/pubkey/v1" | |
+| 7 | Transcript layout hello  | "echovault/hello/v1" | |
+| 8 | Transcript layout server_hello | "echovault/server_hello/v1" | |
 
 ---
 
@@ -80,8 +84,10 @@ PRK   (32 bytes)
 | Name | Value | Encoding |
 |------|-------|----------|
 | `HKDF_SALT` | `65b9295c885b667d3ce7d06afaee50edabb816af6f3b64a763d6b75201e6ed95` — **32 bytes**, see §0 item 1 | raw bytes (given as lowercase hex) |
-| `INFO_X25519` | `"echovault-x25519-encryption""` — **confirm (§0)** | ASCII/UTF-8 bytes, verbatim, no base64 |
+| `INFO_X25519` | `"echovault-x25519-encryption"` — **confirm (§0)** | ASCII/UTF-8 bytes, verbatim, no base64 |
 | `INFO_ED25519` | `"echovault-ed25519-signing"` — **confirm (§0)** | ASCII/UTF-8 bytes, verbatim, no base64 |
+|   |   | |
+|  | `info = "echovault/hpke/v1"` | |
 
 The `info` strings are the exact byte strings, used as-is. They are **never**
 base64-encoded before going into HKDF-Expand.
@@ -119,7 +125,7 @@ AAD = STATE  ‖  DIRECTION  ‖  SEQ8
 
 | Segment | Value | Encoding | Length |
 |---------|-------|----------|--------|
-| `STATE` | `"echovault"` | ASCII bytes `65 63 68 6f 76 61 75 6c 74` | 9 |
+| `STATE` | `"echovault"` | ASCII bytes `65 63 68 6F 76 61 75 6C 74` | 9 |   
 | `DIRECTION` | `"c2s"` (browser→server) or `"s2c"` (server→browser) — **confirm (§0)** | ASCII bytes | 3 (as chosen) |
 | `SEQ8` | message counter | 8-byte **big-endian** unsigned | 8 |
 
@@ -128,6 +134,7 @@ AAD = STATE  ‖  DIRECTION  ‖  SEQ8
   `STATE → DIRECTION → SEQ8`.
 - With the placeholder tokens the AAD is a fixed **20 bytes**.
 - Example (`seq = 0`, browser→server): `65 63 68 6f 76 61 75 6c 74` ‖ `63 32 73` ‖ `00 00 00 00 00 00 00 00`.
+- State does not contain version 
 
 ### 3.2 The AAD is NEVER on the wire
 
@@ -176,10 +183,9 @@ T_hello = "echovault/hello/v1"     (18 ASCII bytes)
         ‖ browser_x25519           (32 raw)
         ‖ browser_ed25519          (32 raw)
         ‖ enc                      (32 raw)   ← browser→server HPKE encapsulated key
-        ‖ nonce                    (12 raw)   ← base nonce for the browser→server link
         ‖ server_x25519            (32 raw)   ← pins which server padlock was used
         ‖ server_ed25519           (32 raw)   ← pins the server identity
-                                                              total = 190 bytes
+                                                              total = 178 bytes
 sig = Ed25519_Sign(browser_ed25519_priv, T_hello)
 ```
 
@@ -191,12 +197,11 @@ are covered).
 ```
 T_server_hello = "echovault/server_hello/v1"  (25 ASCII bytes)
                ‖ enc                (32 raw)   ← server→browser HPKE encapsulated key
-               ‖ nonce              (12 raw)   ← base nonce for the server→browser link
                ‖ browser_x25519     (32 raw)   ← from hello
                ‖ browser_ed25519    (32 raw)   ← from hello
                ‖ server_x25519      (32 raw)
                ‖ server_ed25519     (32 raw)
-                                                              total = 197 bytes
+                                                              total = 185 bytes
 sig = Ed25519_Sign(server_ed25519_priv, T_server_hello)
 ```
 
@@ -228,7 +233,6 @@ anywhere in EchoVault.**
   "browser_x25519":  "…",  // base64url · 32-byte raw X25519 public key
   "browser_ed25519": "…",  // base64url · 32-byte raw Ed25519 public key
   "enc":             "…",  // base64url · 32-byte HPKE encapsulated key (browser→server)
-  "nonce":           "…",  // base64url · 12-byte base nonce (NOT an iv — see §5.5)
   "sig":             "…"   // base64url · 64-byte Ed25519 signature over T_hello (§4.2)
 }
 ```
@@ -238,7 +242,6 @@ anywhere in EchoVault.**
 ```json
 {
   "enc":   "…",            // base64url · 32-byte HPKE encapsulated key (server→browser)
-  "nonce": "…",            // base64url · 12-byte base nonce (NOT an iv — see §5.5)
   "sig":   "…"            // base64url · 64-byte Ed25519 signature over T_server_hello (§4.3)
 }
 ```
@@ -263,11 +266,7 @@ anywhere in EchoVault.**
 **EchoVault has no `iv` field in any frame.** Per-message nonces are *derived*,
 not transmitted as random IVs:
 
-- The `nonce` in `hello`/`server_hello` is the HPKE-exported **base nonce** for
-  that link (see §7), transmitted once and authenticated by the transcript
-  signature. It is deterministic, not a random IV.
-- The actual AEAD nonce for message `N` is `base_nonce XOR seq` (§7.2). It is
-  never sent; the receiver recomputes it from `msg.seq`.
+- No nonce transmitted; library derives it per-message internally. 
 
 ---
 
@@ -283,7 +282,6 @@ MUST NOT appear on the wire.
 | `server_x25519`, `browser_x25519` | pubkey, hello | base64url, no pad |
 | `server_ed25519`, `browser_ed25519` | pubkey, hello | base64url, no pad |
 | `enc` | hello, server_hello | base64url, no pad |
-| `nonce` (base nonce) | hello, server_hello | base64url, no pad |
 | `sig` | pubkey, hello, server_hello | base64url, no pad |
 | `ct` (ciphertext ‖ tag) | msg | base64url, no pad |
 | `seq` | msg | **lowercase hex**, 16 chars, zero-padded, big-endian |
@@ -301,8 +299,9 @@ base64 of 8 bytes buys nothing.
 
 ## 7. Per-message crypto (how a `msg` is built)
 
-Each direction runs HPKE **once** to establish a link, then encrypts many `msg`
-frames under a derived key with a counter-based nonce.
+Each direction opens **one** HPKE context and then uses idiomatic
+`ctx.seal` / `ctx.open` for every `msg`. **HPKE owns the nonce and its own
+internal counter**
 
 ### 7.1 Link setup (once per direction)
 
@@ -310,34 +309,43 @@ frames under a derived key with a counter-based nonce.
 sender:     enc, ctx_S = SetupBaseS(pkR, info = "echovault/hpke/v1")
 recipient:  ctx_R      = SetupBaseR(enc, skR, info = "echovault/hpke/v1")
 
-key        = ctx.Export("echovault chacha key", 32)   # 32-byte ChaCha20-Poly1305 key
-base_nonce = ctx.Export("echovault base nonce", 12)   # the wire `nonce`
 ```
 
-`info = "echovault/hpke/v1"` and both export labels are ASCII bytes (freeze these
-as v1). Sender and recipient derive **identical** `key` and `base_nonce`.
+`enc` (32 bytes) is the only setup value on the wire — carried once in `hello`
+(browser→server) and `server_hello` (server→browser). `info = "echovault/hpke/v1"`
+is ASCII bytes (freeze as v1). Nothing is exported; each context holds its key,
+base nonce, and sequence counter internally.
 
 ### 7.2 Sealing / opening message `seq`
 
 ```
-msg_nonce = base_nonce XOR I2OSP(seq, 12)      # seq as 12-byte big-endian, XORed in
 aad       = STATE ‖ DIRECTION ‖ I2OSP(seq, 8)  # §3
-ct        = ChaCha20Poly1305_Seal(key, msg_nonce, aad, plaintext)   # tag appended
+ct        = ctx.seal(pt, aad) (recipient: ctx.open(ct, aad))
 wire      = { "seq": hex(I2OSP(seq, 8)), "ct": base64url(ct) }
 ```
 
-`seq` is one logical uint64. It appears **12-byte** big-endian when XORed into the
-nonce (HPKE convention; the top 4 bytes are zero) and **8-byte** big-endian inside
-the AAD — same number, different fixed widths. `seq` starts at 0 and increments by
-1 per message per direction. Because key + counter fix the nonce, the sender never
-generates a random IV.
+`ct` is HPKE's AEAD output (ciphertext ‖ 16-byte tag). HPKE's internal sequence
+number starts at 0 and increments by one per `seal`/`open`; it selects the nonce
+automatically and it is never exposed. The `seq` we place in the AAD is the
+**app-level** counter (8-byte big-endian) and MUST track the context's internal
+sequence number one-for-one (both start at 0, both +1 per message per direction).
 
-### 7.3 Replay / reordering
+### 7.3 seq, replay, and reordering
 
-Binding `seq` into the AAD lets the receiver detect replays and reorders, but (KB
-`threat-model.md`) protection is only complete if the **receiver tracks accepted
-`seq` values per link** and rejects duplicates/rollbacks. Sequence tracking is a
-receiver responsibility; 
+Two consequences of letting HPKE own the counter:
+
+- **In-order delivery per direction.** Because the nonce follows HPKE's internal
+  counter, sender and receiver must process each direction's stream in order. A
+  dropped or reordered frame desynchronizes the counters and `open()` fails.
+- **`seq` stays for the replay/reorder story.** The `seq` bound into the AAD is an
+  authenticated position marker the receiver can log and check: reject any frame
+  whose `seq` is not the expected next value. Per KB `threat-model.md`, protection
+  is only complete if the **receiver tracks the expected `seq` per link** and
+  rejects duplicates/rollbacks; document it as partial if not implemented.
+
+> HPKE refuses to `seal` past its per-context message limit (`AEAD` nonce space).
+> Before that (far beyond demo needs) rotate the link with a fresh `enc` and a new
+> `hello` / `server_hello`.
 
 ---
 
@@ -357,5 +365,5 @@ receiver responsibility;
 ## Plaintext Server End Points
 /api/health
 /api/status
-/pubkey/v1
+/pubkey
 

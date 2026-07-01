@@ -80,3 +80,9 @@ Rejected: ___ (generateKeyPair/random; the other X25519 conversion method; persi
 Why:      ___ (deterministic identity from the mnemonic; the X25519 conversion must be byte-
           identical to pyhpke Cam and I will need to test this".)
 
+### D013 — Freeze full wire contract in PROTOCOL.md before live handshake
+Chose:    🔁 (freeze suite + derivation values + AAD encoding + transcript byte-layout +
+          frame shapes + base64 conventions; Cam signs off before either side codes the handshake)
+Rejected: ✅ (write handshake first, reconcile encodings at interop)
+Why:      ✅ (must agree on protocol convention between two different languages and developers that are working 
+            remote Cheaper to catch in doc review than at interop.)

@@ -248,7 +248,8 @@ anywhere in EchoVault.**
 ```json
 {
   "seq": "0000000000000007",  // HEX · 16 chars · 8-byte big-endian uint64 counter
-  "ct":  "…"                 // base64url · ChaCha20-Poly1305 output = ciphertext ‖ 16-byte tag  **THIS IS THE LLM PROMPT**
+  "ct":  "…"                 // base64url · ChaCha20-Poly1305 output = ciphertext ‖ 16-byte tag  
+  // ct is the encrypted **LLM PROMPT**
 }
 ```
 

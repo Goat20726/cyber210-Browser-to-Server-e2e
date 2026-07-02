@@ -76,6 +76,14 @@ PRK   (32 bytes)
    ├─ HKDF-Expand(PRK, info = INFO_X25519,  L = 32) ─▶ x25519_scalar (32 bytes)
    └─ HKDF-Expand(PRK, info = INFO_ED25519, L = 32) ─▶ ed25519_seed  (32 bytes)
 ```
+> **D010 note (standard params + demo limitation).** These PBKDF2 parameters
+> (HMAC-SHA512, 2048 iterations, salt `"mnemonic"‖passphrase`) are the *unmodified*
+> BIP-39 standard, chosen so the same 24 words reproduce the same seed on any
+> compliant implementation — not customized. The low 2048-iteration count is safe
+> only because the security lives in the ~256-bit mnemonic entropy, not in a weak
+> password. `passphrase = ""` drops BIP-39's optional 25th-word second factor, so the
+> 24 words are the sole secret: this is a **demo simplification, not a production
+> recommendation** (production should take a user passphrase).
 
 ---
 
@@ -103,6 +111,13 @@ base64-encoded before going into HKDF-Expand.
 - **DO NOT** derive X25519 by converting the Ed25519 key (no
   Ed25519→Montgomery birational map). The two keys come from two independent
   HKDF-Expand calls. (**D011**)
+
+> **D012 interop gate (do not skip).** Raw-scalar vs. clamped handling and public-key
+> encoding can diverge across libraries. Treat this section as unverified until a small
+> **JS↔Python interop test confirms both sides derive byte-identical
+> `browser_x25519` / `server_x25519` (and matching shared secrets) from the same
+> mnemonic.** The demo depends on this being byte-for-byte identical between hpke-js and
+> pyhpke; verify it before wiring the live handshake.
 
 The Ed25519 key pair is built from `ed25519_seed` the normal way (`Ed25519PrivateKey.from_private_bytes(ed25519_seed)`).
 
@@ -141,10 +156,12 @@ AAD = STATE  ‖  DIRECTION  ‖  SEQ8
 The AAD is passed only as the `aad` argument to seal/open. It is **not** a JSON
 field and appears in **no** frame. Both sides reconstruct it independently from
 values they already hold (`STATE` is constant, `DIRECTION` is known per link,
-`SEQ8` comes from the `msg.seq` field). If the receiver's rebuilt AAD differs by
-one byte, `open()` fails — that is exactly how reflection/replay/direction-swap
-are rejected (KB: "Reflected message should fail authentication").
-
+`SEQ8` comes from the `msg.seq` field). If the receiver rebuilds AAD with a 
+different direction or sequence value, `open()` fails — this rejects direction-swap 
+and reflection mistakes and supports replay/reorder detection. Replay protection 
+is only complete when the receiver also tracks the expected next `seq` per direction 
+and rejects duplicates or rollbacks (§7.3); an exact replay carries a valid AAD and is
+instead rejected by the HPKE context's advanced nonce counter and the `seq` check.
 ---
 
 ## 4. Transcript layout (Ed25519-signed)
@@ -215,6 +232,11 @@ ASCII. The order above is normative.
 JSON objects. Every binary value is a string (base64url, no padding — §6). The
 one exception is `seq`, which is hex. **There is no `iv` field in any frame,
 anywhere in EchoVault.**
+> Frames divide into two classes. **Handshake frames** (`GET /pubkey`
+> response, `hello`, `server_hello`) establish and authenticate the HPKE
+> contexts; they carry key material and signatures only and never carry
+> prompt content. **Encrypted payload frames** (`msg`) carry prompt content
+> exclusively as encrypted `ct`, only after the handshake completes.
 
 ### 5.1 `GET /pubkey` → response
 
@@ -230,6 +252,7 @@ anywhere in EchoVault.**
 
 ```json
 {
+  "type":            "hello",
   "browser_x25519":  "…",  // base64url · 32-byte raw X25519 public key
   "browser_ed25519": "…",  // base64url · 32-byte raw Ed25519 public key
   "enc":             "…",  // base64url · 32-byte HPKE encapsulated key (browser→server)
@@ -241,6 +264,7 @@ anywhere in EchoVault.**
 
 ```json
 {
+  "type":            "hello",
   "enc":   "…",            // base64url · 32-byte HPKE encapsulated key (server→browser)
   "sig":   "…"            // base64url · 64-byte Ed25519 signature over T_server_hello (§4.3)
 }
@@ -250,6 +274,7 @@ anywhere in EchoVault.**
 
 ```json
 {
+  "type":            "msg",
   "seq": "0000000000000007",  // HEX · 16 chars · 8-byte big-endian uint64 counter
   "ct":  "…"                 // base64url · ChaCha20-Poly1305 output = ciphertext ‖ 16-byte tag  
   // ct is the encrypted **LLM PROMPT**
@@ -303,6 +328,14 @@ Each direction opens **one** HPKE context and then uses idiomatic
 `ctx.seal` / `ctx.open` for every `msg`. **HPKE owns the nonce and its own
 internal counter**
 
+> **D014 rationale — why HPKE owns the nonce.**  
+> Manual nonce handling risks **nonce reuse, a catastrophic AEAD failure**:
+> under ChaCha20-Poly1305 a repeated nonce leaks the XOR of the two plaintexts and can
+> enable tag forgery. `ctx.seal`/`ctx.open` derive a unique, monotonic per-message
+> nonce inside the context, so nothing secret or redundant goes on the wire. The cost
+> is the strict in-order / per-context-ceiling tradeoff spelled out in §7.3.
+
+
 ### 7.1 Link setup (once per direction)
 
 ```
@@ -345,7 +378,8 @@ Two consequences of letting HPKE own the counter:
 
 > HPKE refuses to `seal` past its per-context message limit (`AEAD` nonce space).
 > Before that (far beyond demo needs) rotate the link with a fresh `enc` and a new
-> `hello` / `server_hello`.
+> `hello` / `server_hello`. This is the same epoch/session rotation that D009 relies
+> on to bound the static-identity forward-secrecy exposure.
 
 ---
 
@@ -360,10 +394,29 @@ Two consequences of letting HPKE own the counter:
   only helps if the browser already holds the expected server identity via a
   trusted path. If the frontend JS that carries the pin is compromised, the
   attacker can swap both the key and the check.
+**Forward secrecy scope (D009).** The BIP-39 identity keys are *static*. The
+  browser→server direction still gets per-message forward secrecy from the ephemeral
+  `enc`; the static key's exposure is the server→browser (recipient) direction and
+  long-term key compromise (harvest-now-decrypt-later against captured replies),
+  reduced later by epoch/session key rotation (§7.3).
+- Key pinning (the signed transcripts of §4) is a **demo trust assumption**: it
+  only helps if the browser already holds the expected server identity via a
+  trusted path. If the frontend JS that carries the pin is compromised, the
+  attacker can swap both the key and the check.
+- **Code-delivery integrity (D008).** A bundle hash shown during the demo proves
+  nothing if the same origin serves both the bundle and the hash; only an
+  out-of-band-verified hash or a locally packaged/pinned client (SRI, packaged app,
+  extension) removes the server from the code-integrity trust path. This project
+  documents code delivery as a residual limitation rather than solving it.
 
+## Expected public / non-secret endpoints
 
-## Plaintext Server End Points
-/api/health
-/api/status
-/pubkey
+These endpoints do not carry decrypted prompt content.
+
+- `/api/health`
+- `/api/status`
+- `/pubkey` — public keys + transcript signature (§5.1); public by design
+- `/ws` — transport endpoint; prompt payloads appear only as encrypted
+  `ct` fields after handshake setup
+```
 

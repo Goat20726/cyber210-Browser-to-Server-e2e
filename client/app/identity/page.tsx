@@ -95,10 +95,8 @@ export default function IdentityPage() {
       // console.log("Seed derived successfully!");
       // console.log("Seed byte length:", seedBytes.length); 
       // console.log("Seed Hex:", bytesToHex(seedBytes));
-      const hexSalt = 'b65b9295c885b667d3ce7d06afaee50edabb816af6f3b64a763d6b75201e6ed95';
-      const saltBytes = new Uint8Array(
-        hexSalt.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16))
-      );
+      const hexSalt = '65b9295c885b667d3ce7d06afaee50edabb816af6f3b64a763d6b75201e6ed95';
+      const saltBytes = hexToBytes(hexSalt);
       const encoder = new TextEncoder();
       const x25519Info = encoder.encode("echovault-x25519-encryption");
       const ed25519Info = encoder.encode("echovault-ed25519-signing");

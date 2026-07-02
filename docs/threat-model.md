@@ -30,7 +30,7 @@ HPKE inside TLS reduces plaintext exposure at TLS-terminating intermediaries tha
 **The claim is not:**
 
 This system does not hide the prompt from the echo server, a compromised browser, compromised frontend JavaScript, a stolen server private key, server-side logs after decryption, or anyone with privileged access to the server process or host.
-
+ 
 ---
 
 ## Assumptions
@@ -80,7 +80,7 @@ No real credentials, real PII, API keys, access tokens, or private project data 
 
 The main trust boundary is the echo server application process holding the HPKE private key `skB`.
 
-When E2E is ON, network observers and TLS-terminating intermediaries should see only encrypted HPKE payloads, such as `{ enc, ct }`.When E2E is ON, network observers and TLS-terminating intermediaries should see only encrypted HPKE payloads. Handshake frames expose key material (`enc`) and a signature (`sig`); steady-state message frames expose only `{ seq, ct }` (prompt plaintext never appears). (`enc` is carried once per direction in the handshake, not in every message — protocol.md §5.)
+When E2E is ON, network observers and TLS-terminating intermediaries should see only encrypted HPKE payloads. Handshake frames expose key material (`enc`) and a signature (`sig`); steady-state message frames expose only `{ seq, ct }` (prompt plaintext never appears). (`enc` is carried once per direction in the handshake, not in every message — protocol.md §5.)
 
 Plaintext still exists inside the intended echo server process after HPKE decryption and may be exposed through server memory, debug output, application logs, crash dumps, or privileged host access.
 

@@ -142,4 +142,67 @@ Go, and Rust.
   rotation named in D009. **Note (Step-1 F1):** this rotation bounds nonce exhaustion and mints a
   fresh `SESSION_ID`, but on its own it does **not** add forward secrecy while the recipient key
   is a static BIP-39 identity; forward secrecy needs per-epoch ephemeral recipient keys 
-  (future / stretch goal).
+  (future / stretch goal). 
+
+### D015 — Mandatory `server_hello` acceptance gate  ✅
+- **Chose:** Require the browser to **cross-check the contents** of `T_server_hello`, not
+  just verify its signature, **before** opening the HPKE context or sealing any prompt.
+  The browser MUST (protocol.md §4.3.1): (1) `Ed25519_Verify` with the **pinned**
+  `server_ed25519`; (2) assert the transcript's `server_x25519`/`server_ed25519` equal
+  the pin; (3) assert the transcript's `browser_x25519`/`browser_ed25519` byte-equal the
+  values the browser itself put in `hello`; (4) abort hard on any mismatch. The server
+  performs the analogous check on `hello` (client sealed to *this* server's keys).
+- **Rejected:** Signature-only acceptance of `server_hello` (verify `sig`, then proceed).
+- **Why:** The c2s (prompt) direction uses the browser's *ephemeral* `enc`, so it never
+  depends on `browser_x25519`. The s2c (echo-reply) direction — a **declared protected
+  asset**, since the echo carries the prompt back — seals to `browser_x25519`, and the
+  server holds **no pin for the browser**. An active proxy can rewrite `hello` (keep the
+  real `enc`, swap in its own `browser_x25519`, re-sign with its own Ed25519); the real
+  pinned server then validly signs a `server_hello` containing the proxy's key, so a
+  signature-only check passes and the server seals the reply **to the proxy**, which
+  decrypts the prompt. The content cross-check is the only thing that detects this. The
+  `hello → server_hello → msg` ordering means the gate aborts **before** any prompt is
+  sealed, so the fix costs nothing but a comparison. **Tradeoff:** a proxy can still force
+  an abort (denial of service) — explicitly out of scope (availability).
+
+### D016 — `/pubkey` is confirmed against the pin, never trusted from the wire ✅
+- **Chose:** Treat `server_ed25519` from `/pubkey` as **untrusted input**. The browser
+  MUST compare it to a pre-provisioned out-of-band pin **first**, verify the signature
+  against the pin, and adopt `server_x25519` only via that pin-anchored signature
+  (protocol.md §4.1.1). If no pin is provisioned, refuse to run the E2E handshake (fail
+  closed).
+- **Rejected:** Trust-on-first-use / pin-on-first-use — learning and caching the server
+  identity from the first `/pubkey` response.
+- **Why:** The entire key-substitution defense (D004, D015) rests on the server Ed25519
+  identity being a genuine out-of-band pin. If the identity is learned from the wire, an
+  active proxy present at first contact substitutes **both** the key and the identity, and
+  every downstream check — including D015 — then validates against the attacker's key,
+  silently voiding the whole guarantee. This keeps the mitigation inside the documented
+  "pin is a demo trust assumption" boundary (threat-model.md) and makes that assumption
+  *enforceable* rather than implicit. It does **not** claim production key management
+  (provisioning/rotation/revocation remain out of scope).
+
+### D017 — Fresh server ephemeral `enc` per connection is security-critical ✅
+- **Chose:** Mandate a fresh `SetupBaseS` (new ephemeral `enc`) on the server for **every**
+  connection (protocol.md §7.1), so each handshake yields a distinct `SESSION_ID` (§3.0).
+- **Rejected:** Reusing an HPKE context / `enc` across connections as an optimization.
+- **Why:** The whole-session-replay defense works **only** because a replayed `hello`
+  forces the server to emit a fresh `enc`, changing `SESSION_ID` and causing the replayed
+  `msg` frames to fail `open()`. That is currently an emergent property of per-connection
+  ephemerals, not a stated guarantee — an `enc`-reuse optimization would silently reopen
+  session replay, and the server has no independent anti-replay. Documenting it as a MUST
+  converts an accident into a guarantee. **Defense-in-depth (🔁 optional):** mix a
+  server-chosen random nonce into `T_pubkey`/`server_hello`, or reject a `hello` whose
+  `enc` was seen recently.
+
+### D018 — Uniform fail-closed decrypt/handshake error handling (hardens Step-2 S6) ✅
+- **Chose:** On any `open()` failure, malformed frame, bad encoding/length, out-of-order
+  `seq`, or failed acceptance gate, return a **single uniform error**, emit no plaintext,
+  reveal no distinguishing detail on the wire (no bad-tag vs bad-seq vs unknown-key
+  oracle), log without prompt content, and never fall back to a plaintext path
+  (protocol.md §7.4).
+- **Rejected:** Distinct, descriptive error messages per failure cause; any
+  plaintext/partial-plaintext on failure.
+- **Why:** Satisfies the threat-model integrity requirement ("reject without leaking
+  plaintext or sensitive errors") explicitly, avoids padding/oracle-style side channels,
+  and gives the Step-3 tamper/malformed tests (T9/T10) a well-defined expected result.

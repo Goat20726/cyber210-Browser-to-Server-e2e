@@ -213,6 +213,16 @@ All fields are raw, fixed-length, concatenated with **no separators**. Each
 transcript begins with a distinct ASCII **domain-separation label** so a signature
 for one message type can never be replayed as another.
 
+> **⚠️ Signature verification is necessary but NOT sufficient (Step-2 S1/S2).**
+> A valid Ed25519 signature only proves *the holder of some signing key* produced the
+> transcript — it does **not** prove that key is the one you expect, nor that the
+> *contents* of the transcript are the values you sent. Every transcript check in this
+> section therefore has **two** obligatory parts: (1) verify the signature, and
+> (2) **compare the fields inside the transcript, byte-for-byte, against the values the
+> verifier already holds** (its pin, and its own handshake material). Verifying the
+> signature alone is a conformance failure and reopens key substitution — see the
+> mandatory gates in §4.1 (S2) and §4.3 (S1).
+
 ### 4.1 `GET /pubkey` — signed by the **server** Ed25519 key
 
 ```
@@ -236,6 +246,28 @@ sig = Ed25519_Sign(server_ed25519_priv, T_pubkey)
 > pre-shared browser identity, consistent with the threat model (browser identity is
 > not a protected asset).
 
+#### 4.1.1 Mandatory `/pubkey` acceptance rule — the pin is the ONLY root of trust (S2)
+
+`server_ed25519` is a **pin the browser already holds via a trusted out-of-band path**
+(hardcoded pin / local config; `threat-model.md` assumptions). The value served on the
+wire is **untrusted input** and exists only so the browser can confirm it matches the
+pin. The browser MUST, on receiving the `/pubkey` response, in order:
+
+1. **Compare to pin first.** Assert `response.server_ed25519 == PINNED_server_ed25519`
+   (byte-for-byte). If it differs, **abort** — do not proceed, do not "learn" the key.
+2. `Ed25519_Verify(response.sig, T_pubkey)` using the **pinned** `server_ed25519`
+   (equivalently the just-confirmed wire value; they are now identical).
+3. Adopt `response.server_x25519` as the server HPKE recipient key **only** because it
+   is bound, by this verified signature, to the pinned identity.
+
+- **The server identity MUST NEVER be learned from the wire.** Trust-on-first-use from
+  `/pubkey` is a **conformance violation**: an active proxy present at first contact
+  would substitute both the key and the identity, and every downstream check (including
+  §4.3) would then validate against the attacker's key. There is no first-use exception.
+- If no pin is provisioned, the client MUST refuse to run the E2E handshake (fail
+  closed) rather than pin-on-first-use.
+
+
 ### 4.2 `hello` — signed by the **browser** Ed25519 key
 
 Binds the browser's ephemeral material **to the specific server key it sealed to**
@@ -252,6 +284,11 @@ T_hello = "echovault/hello/v1"     (18 ASCII bytes)
 sig = Ed25519_Sign(browser_ed25519_priv, T_hello)
 ```
 
+- The browser MUST place, in `server_x25519` / `server_ed25519`, exactly the
+  **pin-confirmed** server keys from §4.1.1 (not whatever a proxy might have injected).
+  This is what lets the server's counter-signature in §4.3 be cross-checked back to the
+  browser's own view.
+
 ### 4.3 `server_hello` — signed by the **server** Ed25519 key
 
 Binds the server's reply material back to the browser's `hello` (both directions
@@ -267,6 +304,50 @@ T_server_hello = "echovault/server_hello/v1"  (25 ASCII bytes)
                                                               total = 185 bytes
 sig = Ed25519_Sign(server_ed25519_priv, T_server_hello)
 ```
+#### 4.3.1 Mandatory `server_hello` acceptance gate — closes reply-direction key substitution (S1)
+
+**Motivation (do not remove).** The browser→server (c2s) direction seals to the server's
+static key using the browser's *ephemeral* `enc`, so it does **not** depend on
+`browser_x25519`. The server→browser (s2c) direction seals the **echo reply — which
+carries the prompt back and is a declared protected asset** — to `browser_x25519`, and
+the server holds **no pin for the browser**. An active TLS-terminating proxy can
+therefore rewrite the `hello` in flight, keeping the real `enc` but substituting its own
+`browser_x25519` and re-signing with its own Ed25519 key (the server cannot tell — it
+has no browser pin). Result: c2s still delivers the real prompt to the server, but the
+server seals the **reply to the proxy's key**, and the proxy decrypts the prompt. A
+signature-only check does **not** catch this, because the real, pinned server validly
+signs a `server_hello` containing the proxy's `browser_x25519`. The only defense is for
+the browser to confirm the transcript reflects **its own** handshake material.
+
+Because the message order is `hello → server_hello → msg…`, the browser receives
+`server_hello` **before it seals any prompt**, so this gate aborts the session *before*
+any plaintext is exposed.
+
+The browser MUST, on receiving `server_hello`, perform **all** of the following in order,
+**before opening the HPKE context or sealing/opening any `msg`**:
+
+1. `Ed25519_Verify(server_hello.sig, T_server_hello)` using the **pinned**
+   `server_ed25519` (§4.1.1). Reject on failure.
+2. Assert `T_server_hello.server_x25519 == PINNED_server_x25519` **and**
+   `T_server_hello.server_ed25519 == PINNED_server_ed25519` (the pin-confirmed server
+   identity). Reject on any mismatch.
+3. Assert `T_server_hello.browser_x25519 == my browser_x25519` **and**
+   `T_server_hello.browser_ed25519 == my browser_ed25519` — byte-for-byte equal to the
+   values the browser put in its own `hello` (§4.2). **This is the check that defeats S1.**
+   Reject on any mismatch.
+4. Only if steps 1–3 all pass: compute `SESSION_ID` (§3.0), open the s2c HPKE context
+   with `server_hello.enc`, and begin sealing `msg` frames.
+
+- **On any failure the browser MUST abort the session, seal nothing, and surface a hard
+  error** (uniform, no sensitive detail — see §7.4). It MUST NOT downgrade, retry against
+  the substituted key, or send any `msg`.
+- The server performs the analogous sanity check on `hello`: it MUST verify
+  `hello.sig` against `hello.browser_ed25519` and confirm `hello.server_x25519` /
+  `hello.server_ed25519` equal **its own** identity keys (rejecting a `hello` that sealed
+  to some other server key). Note this does **not** authenticate *which* browser is
+  talking (browser identity is out of scope, §4.1 note) — it only ensures the client
+  sealed to this server.
+
 
 **Rule:** every field inside a transcript is **raw** (never base64). Labels are
 ASCII. The order above is normative.
@@ -282,7 +363,8 @@ anywhere in EchoVault.**
 > response, `hello`, `server_hello`) establish and authenticate the HPKE
 > contexts; they carry key material and signatures only and never carry
 > prompt content. **Encrypted payload frames** (`msg`) carry prompt content
-> exclusively as encrypted `ct`, only after the handshake completes.
+> exclusively as encrypted `ct`, only after the handshake completes **and the §4.1.1 /
+> §4.3.1 acceptance gates have passed**.
 
 ### 5.1 `GET /pubkey` → response
 
@@ -293,6 +375,8 @@ anywhere in EchoVault.**
   "sig":            "…"    // base64url · 64-byte Ed25519 signature over T_pubkey (§4.1)
 }
 ```
+> Accepted **only** if it passes the §4.1.1 pin-comparison gate. The `server_ed25519`
+> here is confirmation material for the out-of-band pin, never a source of new trust.
 
 ### 5.2 `hello`  (browser → server)
 
@@ -315,6 +399,12 @@ anywhere in EchoVault.**
   "sig":   "…"              // base64url · 64-byte Ed25519 signature over T_server_hello (§4.3)
 }
 ```
+> The browser reconstructs `T_server_hello` from `enc`, its **own** `browser_x25519` /
+> `browser_ed25519`, and its **pinned** `server_x25519` / `server_ed25519`, then applies
+> the §4.3.1 gate. The `browser_*` and `server_*` fields are therefore not re-sent on the
+> wire (the browser already holds the authoritative copies); resending them would be
+> attacker-controlled input and MUST NOT be trusted if present.
+
 
 ### 5.4 `msg`  (either direction, one per note)
 
@@ -398,6 +488,13 @@ recipient:  ctx_R      = SetupBaseR(enc, skR, info = "echovault/hpke/v1")
 is ASCII bytes (freeze as v1). Nothing is exported; each context holds its key,
 base nonce, and sequence counter internally.
 
+> **Handshake freshness is security-critical (Step-2 S3).** The server MUST run a
+> **fresh** `SetupBaseS` (a new ephemeral `enc`) for **every** connection. Reusing an
+> `enc`/context across connections makes two handshakes produce the same `SESSION_ID`
+> and reopens whole-session replay (a proxy could replay a recorded `hello` and reuse
+> the captured `msg` frames). Fresh per-connection `enc` is what makes `SESSION_ID`
+> (§3.0) perturb per session; treat it as a MUST, not an optimization to remove.
+
 ### 7.2 Sealing / opening message `seq`
 
 ```
@@ -433,6 +530,20 @@ Two consequences of letting HPKE own the counter:
 > would require a fresh **ephemeral recipient** key per epoch (§8).
 ---
 
+### 7.4 Decrypt-failure & malformed-frame handling (Step-2 S6)
+
+On **any** `open()` failure, malformed frame, bad base64url, wrong field length, out-of-
+order `seq`, or failed acceptance gate (§4.1.1 / §4.3.1), the receiver MUST:
+
+- return a **single uniform error** and emit **no** plaintext;
+- reveal **no** distinguishing detail on the wire (no "bad tag" vs "bad seq" vs "unknown
+  key" oracle) — the peer/proxy learns only that the frame was rejected;
+- log the event **without** prompt content (`seq` and a generic reason are fine);
+- fail **closed** — never fall back to an unauthenticated or plaintext path.
+
+---
+
+
 ## 8. What is and isn't protected (from `threat-model.md`)
 
 - "End-to-end" here means **browser → intended echo-server process**. The echo
@@ -440,6 +551,12 @@ Two consequences of letting HPKE own the counter:
   can read.
 - HPKE-inside-TLS reduces plaintext exposure at TLS-terminating intermediaries
   that are not the intended reader.
+- **Key substitution — both directions (Step-2 S1/S2).** With the mandatory acceptance
+  gates (§4.1.1 pin comparison, §4.3.1 `server_hello` self-key check), an active
+  TLS-terminating proxy can neither substitute the server HPKE key (browser→server) nor
+  redirect the echo reply to its own key (server→browser). Both substitutions cause the
+  browser to abort **before** any prompt is sealed. This holds **only** while the server
+  Ed25519 identity is a genuine out-of-band pin (§4.1.1); pin-on-first-use voids it.
 - **Forward secrecy (D009) — corrected.** EchoVault uses HPKE base
   mode. Each message uses a fresh ephemeral on the *sender* side, but **both**
   directions seal to a **static** recipient key (server X25519 for c2s, BIP-39
@@ -452,6 +569,10 @@ Two consequences of letting HPKE own the counter:
   "stolen server private key" out of protection. Real forward secrecy is future work
   and requires per-epoch **ephemeral recipient** keys, not merely rotating the static
   identity (§7.3).
+- Key pinning (the signed transcripts of §4) is a **demo trust assumption**: it
+  only helps if the browser already holds the expected server identity via a
+  trusted path. If the frontend JS that carries the pin is compromised, the
+  attacker can swap both the key and the check.
 - **Code-delivery integrity (D008).** A bundle hash shown during the demo proves
   nothing if the same origin serves both the bundle and the hash; only an
   out-of-band-verified hash or a locally packaged/pinned client (SRI, packaged app,

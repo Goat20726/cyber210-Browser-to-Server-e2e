@@ -49,3 +49,34 @@
 - **Chose:** Revisit whether to include a demo-only code-integrity exhibit, such as a hash shown during the demo or a local packaged client.
 - **Rejected:** Treating JavaScript/code-delivery risk as invisible.
 - **Why:** Browser-side encryption only helps if the browser code doing the encryption is trustworthy. If the same server or delivery path can modify the JavaScript, malicious code could leak plaintext before encryption or change key verification behavior. For this project, we should at minimum document this as a limitation. A hash-on-slide or local packaged client could be used as a demo aid, but that may be stretch work.
+
+
+### D009 — Identity = BIP-39 24-word mnemonic, deterministic keys via HKDF tree
+Chose:    24-word BIP-39 mnemonic -> PBKDF2 seed -> HKDF-SHA256 (domain-separated info)
+          -> static X25519 (HPKE recipient) + Ed25519 (signing) keypairs.
+Rejected: ✅ (random/ephemeral per-session keypair; raw localStorage key blob)
+Why:      ✅ recoverable, escrow-free, human-transferable identity; cost = static key ->
+          weaker forward secrecy / harvest-now-decrypt-later -> mitigated later by the
+          epoch ratchet. Private keys never go on the wire; imported non-extractable.
+
+
+### D010 — Seed derivation: BIP-39 PBKDF2-HMAC-SHA512, 2048 iters, salt "mnemonic", no passphrase
+Chose:    ___ (mnemonicToSeed; standard params untouched; empty passphrase for the demo)
+Rejected: ___ (custom iterations/salt/hash; using a passphrase in the demo flow)
+Why:      ___ (24 words cannot derive a key directly because they're the wrong shape; but the same words must 
+            reproduce the same seed on any compliant implementation between Cam and I and if the user logs onto a new laptop and enters 4-word mnemonic we need to be able to regenerate the same keys)
+
+### D011 — Key tree: HKDF-SHA256 fork with domain-separated info, NOT BIP-32/SLIP-0010
+Chose:    ___ (two HKDF-SHA256 calls off the 64-byte seed; distinct info per key, e.g.
+          "echovault-x25519-encryption" and "echovault-ed25519-signing"; salt policy = **65b9295c885b667d3ce7d06afaee50edabb816af6f3b64a763d6b75201e6ed95** (freeze it); 32 bytes each)
+Rejected: ___ (split the seed in half / single hash reused; BIP-32/SLIP-0010 derivation paths)
+Why:      ___ (domain separation via info; HKDF is simple + curve-agnostic
+          and we need two flat keys. **Info** strings + **salt** are frozen — changing them silently changes the identity.)
+
+### D012 — Keypair derivation: secrets -> X25519 (HPKE recipient) + Ed25519 (signing)
+Chose:    ___ (Ed25519 priv = the 32-byte edSecret; X25519 keypair via **RAW SCALAR** — needs to matched with Cam's
+            pyhpke side)
+Rejected: ___ (generateKeyPair/random; the other X25519 conversion method; persisting privs)
+Why:      ___ (deterministic identity from the mnemonic; the X25519 conversion must be byte-
+          identical to pyhpke Cam and I will need to test this".)
+

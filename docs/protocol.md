@@ -10,7 +10,9 @@ that a Node-sealed message opens in python and vice versa.
 Architecture context (KB `threat-model.md`): L4 is "RFC 9180 HPKE using X25519,
 HKDF-SHA-256, and ChaCha20-Poly1305"; the handshake "binds key material to a
 signed transcript"; "monotonic sequence numbers [are] bound into AAD"; and
-"direction and session context [are] bound into AAD."
+"direction [is] bound into AAD", with **session context bound via a per-session
+`SESSION_ID` derived from the handshake transcripts (§3.0)** so a sealed message
+cannot be reflected into a different session.
 
 ---
 
@@ -24,10 +26,11 @@ The following are frozen decisions you must paste in verbatim.
 | 2 | X25519 `info` string | `"echovault-x25519-encryption"` | D011 |
 | 3 | Ed25519 `info` string | `"echovault-ed25519-signing"` | D011 |
 | 4 | Direction tokens | `"c2s"` / `"s2c"` | D013/handshake |
-| 5 | HPKE Info        |      `info = "echovault/hpke/v1"`  |      |
-| 6 | Transcript layout pubkey |  "echovault/pubkey/v1" | |
-| 7 | Transcript layout hello  | "echovault/hello/v1" | |
-| 8 | Transcript layout server_hello | "echovault/server_hello/v1" | |
+| 5 | HPKE Info | `info = "echovault/hpke/v1"` | D013 |
+| 6 | Transcript layout pubkey | `"echovault/pubkey/v1"` | D013 |
+| 7 | Transcript layout hello | `"echovault/hello/v1"` | D013 |
+| 8 | Transcript layout server_hello | `"echovault/server_hello/v1"` | D013 |
+| 9 | `SESSION_ID` derivation | `SHA-256(T_hello ‖ T_server_hello)[:16]` — 16 bytes (§3.0) | D013 |
 
 ---
 
@@ -52,6 +55,7 @@ Derived lengths used throughout:
 | `Nt` | Poly1305 tag (appended to ciphertext) | 16 |
 | — | Ed25519 public key | 32 |
 | — | Ed25519 signature | 64 |
+| — | `SESSION_ID` (SHA-256 truncated) | 16 |
 
 ---
 
@@ -92,10 +96,10 @@ PRK   (32 bytes)
 | Name | Value | Encoding |
 |------|-------|----------|
 | `HKDF_SALT` | `65b9295c885b667d3ce7d06afaee50edabb816af6f3b64a763d6b75201e6ed95` — **32 bytes**, see §0 item 1 | raw bytes (given as lowercase hex) |
-| `INFO_X25519` | `"echovault-x25519-encryption"` — **confirm (§0)** | ASCII/UTF-8 bytes, verbatim, no base64 |
-| `INFO_ED25519` | `"echovault-ed25519-signing"` — **confirm (§0)** | ASCII/UTF-8 bytes, verbatim, no base64 |
-|   |   | |
-|  | `info = "echovault/hpke/v1"` | |
+| `INFO_X25519` | `"echovault-x25519-encryption"` (frozen, §0 item 2) | ASCII/UTF-8 bytes, verbatim, no base64 |
+| `INFO_ED25519` | `"echovault-ed25519-signing"` (frozen, §0 item 3) | ASCII/UTF-8 bytes, verbatim, no base64 |
+| HPKE `info` | `"echovault/hpke/v1"` (frozen, §0 item 5) | ASCII/UTF-8 bytes, verbatim, no base64 |
+
 
 The `info` strings are the exact byte strings, used as-is. They are **never**
 base64-encoded before going into HKDF-Expand.
@@ -127,41 +131,75 @@ The Ed25519 key pair is built from `ed25519_seed` the normal way (`Ed25519Privat
 
 The AAD ("additional authenticated data") is a fixed label that the AEAD
 authenticates but does **not** encrypt. It binds every message to the app, the
-direction, and its position in the stream.
+**session**, the direction, and its position in the stream.
+
+### 3.0 Session identifier (`SESSION_ID`) — NEW (Step-1 F2 fix)
+
+`SESSION_ID` binds every sealed message to the *specific handshake instance* that
+established the keys, so a ciphertext captured in one session cannot be replayed
+("reflected") into a different session even if the app label, direction, and `seq`
+happen to line up.
+
+```
+SESSION_ID = SHA-256( T_hello ‖ T_server_hello )   [first 16 bytes]
+```
+
+- `T_hello` (178 raw bytes, §4.2) and `T_server_hello` (185 raw bytes, §4.3) are the
+  exact signed transcripts both parties already hold **after** the handshake
+  completes. Concatenate raw bytes in that order, SHA-256, and take the **first 16
+  bytes**.
+- Because both transcripts contain both `enc` values and both parties' static keys,
+  `SESSION_ID` is a 128-bit fingerprint of the whole handshake. Two different
+  sessions (different ephemerals) produce different `SESSION_ID`s with overwhelming
+  probability.
+- `SESSION_ID` is **derived, never transmitted.** Both sides recompute it locally,
+  exactly like the rest of the AAD (§3.2). It MUST be identical byte-for-byte across
+  the JS and Python sides — add it to the D012 interop test.
+- It is fixed for the lifetime of a link and identical for both directions of that
+  link. On epoch/link rotation (§7.3) a fresh handshake yields a fresh `SESSION_ID`.
 
 ### 3.1 Layout — fixed order, no separators
 
 ```
-AAD = STATE  ‖  DIRECTION  ‖  SEQ8
-        │          │          └── seq as 8-byte big-endian unsigned (uint64)
-        │          └───────────── direction token, ASCII bytes (§0 item 4)
-        └──────────────────────── the constant ASCII bytes "echovault"
+AAD = STATE ‖ SESSION_ID ‖ DIRECTION ‖ SEQ8
+        │         │            │          └── seq as 8-byte big-endian unsigned (uint64)
+        │         │            └───────────── direction token, ASCII bytes (§0 item 4)
+        │         └────────────────────────── SHA-256(T_hello ‖ T_server_hello)[:16] (§3.0)
+        └──────────────────────────────────── the constant ASCII bytes "echovault"
 ```
 
 | Segment | Value | Encoding | Length |
 |---------|-------|----------|--------|
-| `STATE` | `"echovault"` | ASCII bytes `65 63 68 6F 76 61 75 6C 74` | 9 |   
-| `DIRECTION` | `"c2s"` (browser→server) or `"s2c"` (server→browser) — **confirm (§0)** | ASCII bytes | 3 (as chosen) |
+| `STATE` | `"echovault"` | ASCII bytes `65 63 68 6F 76 61 75 6C 74` | 9 |
+| `SESSION_ID` | `SHA-256(T_hello ‖ T_server_hello)[:16]` (§3.0) | raw bytes | 16 |
+| `DIRECTION` | `"c2s"` (browser→server) or `"s2c"` (server→browser) | ASCII bytes | 3 |
 | `SEQ8` | message counter | 8-byte **big-endian** unsigned | 8 |
 
 - **No separator bytes, no length prefixes.** Every segment is fixed-length, so
   the concatenation is unambiguous. Concatenation order is exactly
-  `STATE → DIRECTION → SEQ8`.
-- With the placeholder tokens the AAD is a fixed **20 bytes**.
-- Example (`seq = 0`, browser→server): `65 63 68 6f 76 61 75 6c 74` ‖ `63 32 73` ‖ `00 00 00 00 00 00 00 00`.
-- State does not contain version 
+  `STATE → SESSION_ID → DIRECTION → SEQ8`.
+- With the placeholder tokens the AAD is a fixed **36 bytes** (9 + 16 + 3 + 8).
+- Example (`seq = 0`, browser→server), with `SESSION_ID` shown as `SS…SS`:
+  `65 63 68 6f 76 61 75 6c 74` ‖ `SS…SS (16 bytes)` ‖ `63 32 73` ‖ `00 00 00 00 00 00 00 00`.
 
 ### 3.2 The AAD is NEVER on the wire
 
 The AAD is passed only as the `aad` argument to seal/open. It is **not** a JSON
 field and appears in **no** frame. Both sides reconstruct it independently from
-values they already hold (`STATE` is constant, `DIRECTION` is known per link,
-`SEQ8` comes from the `msg.seq` field). If the receiver rebuilds AAD with a 
-different direction or sequence value, `open()` fails — this rejects direction-swap 
-and reflection mistakes and supports replay/reorder detection. Replay protection 
-is only complete when the receiver also tracks the expected next `seq` per direction 
-and rejects duplicates or rollbacks (§7.3); an exact replay carries a valid AAD and is
-instead rejected by the HPKE context's advanced nonce counter and the `seq` check.
+values they already hold (`STATE` is constant, `SESSION_ID` is computed from the
+handshake transcripts (§3.0), `DIRECTION` is known per link, `SEQ8` comes from the
+`msg.seq` field). If the receiver rebuilds AAD with a different session, direction,
+or sequence value, `open()` fails — this rejects cross-session reflection,
+direction-swap, and reflection mistakes, and supports replay/reorder detection.
+
+**Replay protection is partial by default (F3 clarification).** An exact replay of an
+*already-consumed* frame fails to `open()` because the stateful HPKE context has
+already advanced past that message — but this is a **fail-closed side effect that
+also desynchronizes the stream, not a clean replay check**. Complete replay/reorder
+handling requires the receiver to track the expected next `seq` per direction and
+reject duplicates/rollbacks *before* calling `open()` (§7.3). Until that tracking is
+implemented, document replay protection as **partial** (see `threat-model.md`,
+"Replay and Sequence Number Limits").
 ---
 
 ## 4. Transcript layout (Ed25519-signed)
@@ -189,6 +227,14 @@ sig = Ed25519_Sign(server_ed25519_priv, T_pubkey)
 | 1 | label `"echovault/pubkey/v1"` | ASCII | 19 |
 | 2 | `server_x25519` (public) | raw | 32 |
 | 3 | `server_ed25519` (public) | raw | 32 |
+
+
+> **Note (F11 clarification).** The handshake authenticates the **server to the
+> browser**: the browser verifies this signature against the **pinned** server
+> Ed25519 key. The browser's `hello` signature (§4.2) is **trust-on-first-use** — it
+> binds the browser's own view of the exchange but is not checked against any
+> pre-shared browser identity, consistent with the threat model (browser identity is
+> not a protected asset).
 
 ### 4.2 `hello` — signed by the **browser** Ed25519 key
 
@@ -264,9 +310,9 @@ anywhere in EchoVault.**
 
 ```json
 {
-  "type":            "hello",
-  "enc":   "…",            // base64url · 32-byte HPKE encapsulated key (server→browser)
-  "sig":   "…"            // base64url · 64-byte Ed25519 signature over T_server_hello (§4.3)
+  "type":  "server_hello",  // distinct from "hello" so a receiver can tell them apart 
+  "enc":   "…",             // base64url · 32-byte HPKE encapsulated key (server→browser)
+  "sig":   "…"              // base64url · 64-byte Ed25519 signature over T_server_hello (§4.3)
 }
 ```
 
@@ -285,6 +331,8 @@ anywhere in EchoVault.**
   **no** separate `tag` field and **no** `iv` field.
 - `seq` is **hex**, not base64 — it is a human-readable counter and a uint64
   exceeds JavaScript's safe-integer range, so it must not be a JSON number.
+- Note: a steady-state `msg` frame is `{ type, seq, ct }` — **`enc` appears only in
+  the handshake** (`hello` / `server_hello`), not in every message.
 
 ### 5.5 No `iv` field — anywhere
 
@@ -313,6 +361,7 @@ MUST NOT appear on the wire.
 | `HKDF_SALT` | config / this doc | lowercase hex |
 | `INFO_X25519`, `INFO_ED25519` | key derivation | ASCII/UTF-8 bytes, verbatim (no base64) |
 | `STATE` (`"echovault"`), `DIRECTION` | inside AAD | ASCII bytes, verbatim (no base64) |
+| `SESSION_ID` | inside AAD (derived, §3.0) | raw bytes (SHA-256 truncated); never on the wire |
 | transcript labels (`"echovault/hello/v1"`, …) | inside signed bytes | ASCII bytes, verbatim |
 
 Rationale for the split: base64url is JSON/URL/header-safe; dropping padding
@@ -352,7 +401,7 @@ base nonce, and sequence counter internally.
 ### 7.2 Sealing / opening message `seq`
 
 ```
-aad       = STATE ‖ DIRECTION ‖ I2OSP(seq, 8)  # §3
+aad       = STATE ‖ SESSION_ID ‖ DIRECTION ‖ I2OSP(seq, 8)  # §3
 ct        = ctx.seal(pt, aad) (recipient: ctx.open(ct, aad))
 wire      = { "seq": hex(I2OSP(seq, 8)), "ct": base64url(ct) }
 ```
@@ -378,9 +427,10 @@ Two consequences of letting HPKE own the counter:
 
 > HPKE refuses to `seal` past its per-context message limit (`AEAD` nonce space).
 > Before that (far beyond demo needs) rotate the link with a fresh `enc` and a new
-> `hello` / `server_hello`. This is the same epoch/session rotation that D009 relies
-> on to bound the static-identity forward-secrecy exposure.
-
+> `hello` / `server_hello` (which also mints a fresh `SESSION_ID`, §3.0). This is the
+> same epoch/session rotation that D009/D014 name as future work. Note: rotating the
+> *static identity* key adds no forward secrecy on its own — real forward secrecy
+> would require a fresh **ephemeral recipient** key per epoch (§8).
 ---
 
 ## 8. What is and isn't protected (from `threat-model.md`)
@@ -390,19 +440,18 @@ Two consequences of letting HPKE own the counter:
   can read.
 - HPKE-inside-TLS reduces plaintext exposure at TLS-terminating intermediaries
   that are not the intended reader.
-- Key pinning (the signed transcripts of §4) is a **demo trust assumption**: it
-  only helps if the browser already holds the expected server identity via a
-  trusted path. If the frontend JS that carries the pin is compromised, the
-  attacker can swap both the key and the check.
-**Forward secrecy scope (D009).** The BIP-39 identity keys are *static*. The
-  browser→server direction still gets per-message forward secrecy from the ephemeral
-  `enc`; the static key's exposure is the server→browser (recipient) direction and
-  long-term key compromise (harvest-now-decrypt-later against captured replies),
-  reduced later by epoch/session key rotation (§7.3).
-- Key pinning (the signed transcripts of §4) is a **demo trust assumption**: it
-  only helps if the browser already holds the expected server identity via a
-  trusted path. If the frontend JS that carries the pin is compromised, the
-  attacker can swap both the key and the check.
+- **Forward secrecy (D009) — corrected.** EchoVault uses HPKE base
+  mode. Each message uses a fresh ephemeral on the *sender* side, but **both**
+  directions seal to a **static** recipient key (server X25519 for c2s, BIP-39
+  browser X25519 for s2c). HPKE base mode is therefore **not** forward-secret against
+  recipient long-term-key compromise in **either** direction — the posture is
+  symmetric. Theft of the server's static X25519 key allows decryption of **all
+  captured prompts** (browser→server, the most sensitive direction) via
+  harvest-now-decrypt-later; theft of the browser static key likewise exposes
+  captured replies. This is consistent with `threat-model.md`, which already scopes
+  "stolen server private key" out of protection. Real forward secrecy is future work
+  and requires per-epoch **ephemeral recipient** keys, not merely rotating the static
+  identity (§7.3).
 - **Code-delivery integrity (D008).** A bundle hash shown during the demo proves
   nothing if the same origin serves both the bundle and the hash; only an
   out-of-band-verified hash or a locally packaged/pinned client (SRI, packaged app,

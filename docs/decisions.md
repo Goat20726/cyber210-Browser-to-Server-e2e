@@ -25,10 +25,10 @@
 - **Rejected:** AES-256-GCM (slower without hardware acceleration)
 - **Why:** ChaCha20-Poly1305 is a strong AEAD choice with good software performance and broad support in modern protocols/libraries. It avoids relying on AES hardware acceleration, which makes it a practical choice across different test environments. HPKE/library support also helps keep nonce and key-schedule handling out of our custom code. We should still treat nonce reuse as dangerous and rely on the HPKE library to manage this correctly.
 
-### D004 - Handshake authentication: implemented vs hand-waved ✅
+### D004 - Handshake authentication: implemented vs hand-waved ✅ *(updated)*
 - **Chose:** Authenticated handshake with signed key material / transcript verification.
 - **Rejected:** Unauthenticated public-key exchange.
-- **Why:** Without handshake authentication, a TLS-terminating proxy could try a key-substitution attack by replacing Bob’s public key with its own. Authentication gives the browser a way to verify that it is sealing the prompt to the intended server key.
+- **Why:** Without handshake authentication, a TLS-terminating proxy could try a key-substitution attack by replacing Bob’s public key with its own. Authentication gives the browser a way to verify that it is sealing the prompt to the intended server key. (Note: this authenticates the *server to the browser* via the pinned Ed25519 key; the browser's own `hello` signature is trust-on-first-use — see protocol.md §4.1 note.)
 
 ### D005 — Threat model & trust boundary ✅
 - **Chose:** HPKE-protected application payloads inside TLS 1.3. The browser seals the prompt before it enters the socket, and the intended echo server opens it.
@@ -40,10 +40,10 @@
 - **Rejected:** Leaving the threat model with outdated AES-GCM references and missing active attacker cases.
 - **Why:** The protocol now uses ChaCha20-Poly1305 through HPKE, and the diagrams include an authenticated handshake, key pinning, sealed payloads, replay/order checks, and mitmproxy as an active TLS-terminating intermediary. The threat model should include key substitution, tampering, replay/reorder, reflection, traffic analysis, served-JS/code delivery, and server-side plaintext logging as either threats or limitations.
 
-### D007 — Wire envelope format ✅
-- **Chose:** A structured JSON message envelope with fields such as `type`, `seq`, `sender`, `timestamp`, and a payload field. In plaintext mode the payload may be `text`; in E2E mode it becomes sealed HPKE fields such as `enc` and `ct`.
-- **Rejected:** An unstructured raw text message and a single global sequence counter.
-- **Why:** A stable envelope makes the demo easier to extend. The same message structure can support plaintext mode, E2E mode, replay detection, and ordering checks. Separate client-to-server and server-to-client sequence tracking is clearer than one global counter. HPKE owns nonce handling, so the envelope should not add a custom IV field.
+### D007 — Wire envelope format ✅  *(updated)*
+- **Chose:** A structured JSON message envelope with a `type` discriminator and per-message-type fields, frozen in `protocol.md` §5. The steady-state message frame is `{ "type": "msg", "seq", "ct" }` (E2E mode); handshake frames (`hello`, `server_hello`, `GET /pubkey` response) carry key material (`enc`, public keys) and a `sig` only. In plaintext (E2E-OFF) mode the payload may instead be a `text` field.
+- **Rejected:** An unstructured raw text message and a single global sequence counter. Also **dropped** the earlier `sender` and `timestamp` envelope fields — `protocol.md` §5.4 (the single source of truth per D013) does not carry them; direction is known per link and freshness is handled via `seq` + session binding, not a wire timestamp.
+- **Why:** A stable envelope makes the demo easier to extend. The same message structure can support plaintext mode, E2E mode, replay detection, and ordering checks. Separate client-to-server and server-to-client sequence tracking is clearer than one global counter. HPKE owns nonce handling, so the envelope should not add a custom IV field. **This entry is descriptive; if it ever conflicts with `protocol.md` §5, `protocol.md` wins (D013).**
 
 ### D008 — Served-JS / code-delivery integrity ✅ (limitation) · 🧪 (demo aid)
 - **Chose:** Document browser code-delivery integrity as an explicit, unsolved limitation of
@@ -59,20 +59,23 @@
   from the code-integrity trust path.
 
 
-### D009 — Identity = BIP-39 24-word mnemonic, deterministic keys via HKDF tree ✅
+### D009 — Identity = BIP-39 24-word mnemonic, deterministic keys via HKDF tree ✅ *(updated)*
 - **Chose:** Derive a static identity from a 24-word BIP-39 mnemonic via the standard BIP-39
   seed process and an HKDF-SHA256 key tree, yielding an X25519 HPKE-recipient key and an
   Ed25519 signing key.
 - **Rejected:** Random per-session identity keys, raw localStorage key blobs, or any scheme
   that cannot be recovered from the mnemonic.
 - **Why:** The mnemonic gives a recoverable, escrow-free, human-transferable demo identity with
-  no server-side private-key storage. **Tradeoff:** a static identity key is
-  weaker than a fresh per-session key. HPKE base mode already provides per-message
-  forward secrecy on the browser→server direction from the ephemeral encapsulation (`enc`); the
-  static key's exposure is the server→browser (recipient) direction and long-term key
-  compromise — i.e. harvest-now-decrypt-later against captured replies. That residual risk is
-  reduced later by session/epoch key rotation (the epoch ratchet) (future work / stretch goal). 
-  Private keys never go on the wire and are imported non-extractable where the platform allows.
+  no server-side private-key storage. 
+- **Tradeoff (corrected Step-1 F1):** a static identity key is weaker than a fresh per-session
+  key. EchoVault uses HPKE **base mode**, which seals every message to a **static** recipient
+  key in **both** directions (server X25519 for c2s, browser X25519 for s2c). Base mode is
+  therefore **not** forward-secret against recipient long-term-key compromise in **either**
+  direction: a stolen server key exposes all captured prompts (harvest-now-decrypt-later). This
+  is consistent with `threat-model.md`, which already scopes "stolen server private key" out.
+  Real forward secrecy would require per-epoch **ephemeral recipient** keys (not merely rotating
+  the static identity) — future work / stretch goal. Private keys never go on the wire and are
+  imported non-extractable where the platform allows.
 
 
 ### D010 — Seed derivation = standard BIP-39 mnemonicToSeed parameters ✅
@@ -110,7 +113,9 @@
   interop obligation; it need not reproduce the scalar math. The specific footgun is deterministic 
   X25519 derivation from HKDF bytes, where raw-scalar vs. clamped handling can diverge between 
   libraries and produce mismatched public keys or shared secrets. Move the exact byte-level 
-  contract (scalar clamping, encoding) into PROTOCOL.md
+  contract (scalar clamping, encoding) into PROTOCOL.md **Also add `SESSION_ID` (protocol §3.0)
+  to the interop test — both sides must compute `SHA-256(T_hello ‖ T_server_hello)[:16]`
+  byte-identically.**
 
 ### D013 — Freeze the full wire contract in PROTOCOL.md before live handshake ✅
 - **Chose:** Freeze the HPKE suite, key-derivation values (salt/info/iterations), public-key
@@ -134,4 +139,7 @@ Go, and Rust.
 - **Tradeoff:** Each HPKE context requires strict in-order delivery per direction, offers no
   random-access/stateless decryption, and has a per-context message ceiling. A long-lived link
   must rotate to a fresh context (`enc` + hello/server_hello) before that ceiling — the same
-  rotation the D009 epoch ratchet provides **(future goal / stretch goal)**.
+  rotation named in D009. **Note (Step-1 F1):** this rotation bounds nonce exhaustion and mints a
+  fresh `SESSION_ID`, but on its own it does **not** add forward secrecy while the recipient key
+  is a static BIP-39 identity; forward secrecy needs per-epoch ephemeral recipient keys 
+  (future / stretch goal).

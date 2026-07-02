@@ -2,33 +2,30 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "== Pure unit tests (no server) =="
-python3 spike_hpke_roundtrip.py
+echo "== Crypto unit tests (no server) =="
+python3 test_crypto_unit.py
 echo
 
-echo "== Generating throwaway key for this test run =="
-export $(python3 generate_keys.py | grep SERVER_HPKE_PRIVATE_KEY_HEX)
-echo "(generated)"
-echo
+echo "== Full handshake integration test =="
+python3 -c "
+import subprocess, time, os, sys
+sys.path.insert(0, '.')
+import hpke_server as h
 
-echo "== Starting echo_server =="
-(uvicorn main:app --host 0.0.0.0 --port 8000 > /tmp/echo_server.log 2>&1 &)
-sleep 2
+k = h.generate_server_keys()
+env = {**os.environ,
+       'SERVER_X25519_PRIVATE_KEY_HEX':  k['SERVER_X25519_PRIVATE_KEY_HEX'],
+       'SERVER_ED25519_PRIVATE_KEY_HEX': k['SERVER_ED25519_PRIVATE_KEY_HEX']}
 
-echo "== E2E OFF: plaintext echo =="
-python3 test_plaintext.py
-echo
-
-echo "== E2E ON: HPKE-encrypted echo =="
-python3 test_secure.py
-echo
-
-echo "== Toggle E2E on/off within ONE connection =="
-python3 test_toggle_e2e.py
-echo
-
-echo "== Tamper rejection =="
-python3 test_tamper.py
+srv = subprocess.Popen(
+    ['uvicorn','main:app','--host','0.0.0.0','--port','8000'],
+    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+)
+time.sleep(2)
+ret = subprocess.run([sys.executable, 'test_handshake.py'], env=env)
+srv.terminate()
+sys.exit(ret.returncode)
+"
 
 echo
 echo "✅ All checks passed."

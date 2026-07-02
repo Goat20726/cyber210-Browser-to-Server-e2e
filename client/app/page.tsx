@@ -1,45 +1,4 @@
-/* ============================================================================
- * BOREALIS ASSISTANT — A simple chat app (front end / what the user sees)
- * ============================================================================
- *
- * WHAT IS THIS FILE?
- *   This is ONE screen of a website: a chat window (like ChatGPT). It is
- *   written in "React", which is a popular toolkit for building web pages.
- *
- * THREE LANGUAGES ARE MIXED TOGETHER HERE — here's the 30-second tour:
- *
- *   1) JavaScript / TypeScript  → the "brain". It decides WHAT happens:
- *        what to do when you click "send", how to talk to the server, etc.
- *        (TypeScript is just JavaScript with extra "type" labels that help
- *         catch mistakes, e.g. "this value must be a number".)
- *
- *   2) HTML (written here as "JSX") → the "skeleton". It describes the
- *        visible PIECES on screen: boxes, text, buttons, the input field.
- *        In React, HTML is written right inside the JavaScript using tags
- *        that look like <div>, <button>, <h1>, etc.
- *
- *   3) CSS → the "paint and layout". It decides how things LOOK: colors,
- *        sizes, spacing, rounded corners, animations. All the CSS for this
- *        screen lives in the big text block named `styles` at the BOTTOM.
- *
- * HOW IT TALKS TO THE SERVER:
- *   It uses a "WebSocket" — think of it as a phone line that stays open so
- *   the browser and the server can send messages back and forth instantly,
- *   instead of hanging up and re-dialing for every message.
- *
- * READING ORDER (top to bottom):
- *   A) Setup & imports
- *   B) The shape of a chat message (a TypeScript "type")
- *   C) The component itself: its memory (state), its connection logic,
- *      and the functions that run when you type/send.
- *   D) The visible layout (the HTML/JSX returned at the end).
- *   E) The CSS styles (the big string at the very bottom).
- * ========================================================================== */
 
-
-// "use client" tells the website framework (Next.js) that this screen runs in
-// the visitor's BROWSER (not pre-built on the server). We need this because the
-// chat reacts live to clicks, typing, and incoming messages.
 "use client";
 
 // Bring in ("import") the React tools we need:
@@ -48,30 +7,146 @@
 //   useRef    → a private box to remember a value WITHOUT redrawing the screen
 import React, { useState, useEffect, useRef } from 'react';
 import Link from "next/link";
-import { validateMnemonic, mnemonicToSeed } from "@scure/bip39";
+import { generateMnemonic, mnemonicToSeed } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { extract, expand } from "@noble/hashes/hkdf.js";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
+import { CipherSuite, HkdfSha256 } from "@hpke/core";
+import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
+import { Chacha20Poly1305 } from "@hpke/chacha20poly1305";
 
-/* ----------------------------------------------------------------------------
- * THE SHAPE OF DATA
- * ----------------------------------------------------------------------------
- * Below we describe, in TypeScript, exactly what a chat message looks like.
- * This is like a form template: every message MUST have these fields, and each
- * field has a fixed kind of value. If we ever forget a field or use the wrong
- * kind of value, TypeScript warns us before the app even runs.
- * -------------------------------------------------------------------------- */
 
-// A message can only come from one of two senders: the human ('user') or the
-// AI ('assistant'). The "|" means "this OR that" and nothing else is allowed.
+// ---------------------------------------------------------------------------
+// Frozen constants — protocol.md §0 (D011/D013/D020), paste-verbatim.
+// ---------------------------------------------------------------------------
+const te = new TextEncoder();
+const HKDF_SALT = hexToBytes(
+  "65b9295c885b667d3ce7d06afaee50edabb816af6f3b64a763d6b75201e6ed95",
+);
+const INFO_X25519 = te.encode("echovault-x25519-encryption");
+const INFO_ED25519 = te.encode("echovault-ed25519-signing");
+const HPKE_INFO = te.encode("echovault/hpke/v1");
+const LABEL_PUBKEY = te.encode("echovault/pubkey/v1");
+const LABEL_HELLO = te.encode("echovault/hello/v1");
+const LABEL_SERVER_HELLO = te.encode("echovault/server_hello/v1");
+const AAD_STATE = te.encode("echovault");
+const DIR_C2S = te.encode("c2s");
+const DIR_S2C = te.encode("s2c");
+const TYPE_MSG = new Uint8Array([0x01]);
+
+const suite = new CipherSuite({
+  kem: new DhkemX25519HkdfSha256(),
+  kdf: new HkdfSha256(),
+  aead: new Chacha20Poly1305(),
+});
+
+// ---------------------------------------------------------------------------
+// Byte helpers — §6: base64url no padding (strict), hex seq, raw concat.
+// ---------------------------------------------------------------------------
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+  return out;
+}
+
+function b64u(raw: Uint8Array): string {
+  let bin = "";
+  raw.forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Strict base64url decode: rejects standard base64 and wrong lengths. */
+function unb64u(s: string, expectedLen: number): Uint8Array {
+  if (typeof s !== "string" || /[+/=]/.test(s)) throw new Error("bad encoding");
+  const bin = atob(
+    s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4),
+  );
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  if (expectedLen >= 0 && out.length !== expectedLen)
+    throw new Error("bad length");
+  return out;
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+}
+
+/** Standalone ArrayBuffer copy (hpke-js wants ArrayBuffer inputs). */
+function ab(u8: Uint8Array): ArrayBuffer {
+  return u8.slice().buffer as ArrayBuffer;
+}
+
+function seqToBytes8(seq: number): Uint8Array {
+  // 8-byte big-endian uint64; demo counters stay far below 2^53.
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(seq), false);
+  return out;
+}
+
+function seqToHex(seq: number): string {
+  return seq.toString(16).padStart(16, "0");
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+/** AAD = STATE ‖ SESSION_ID ‖ DIRECTION ‖ TYPE ‖ SEQ8 — 37 bytes (§3.1). */
+function buildAad(sessionId: Uint8Array, dir: Uint8Array, seq: number): Uint8Array {
+  return concat(AAD_STATE, sessionId, dir, TYPE_MSG, seqToBytes8(seq));
+}
+
+// ---------------------------------------------------------------------------
+// Identity derivation — §2: one mnemonic → two unrelated key pairs.
+// ---------------------------------------------------------------------------
+interface Identity {
+  mnemonic: string;
+  xScalar: Uint8Array; // §2.3: raw HKDF output IS the X25519 private scalar
+  xPub: Uint8Array;
+  edSeed: Uint8Array;
+  edPub: Uint8Array;
+}
+
+async function deriveIdentity(mnemonic: string): Promise<Identity> {
+  // BIP-39 standard PBKDF2 (HMAC-SHA512, 2048 iters, salt "mnemonic"‖""),
+  // exactly as frozen in D010 — @scure/bip39 implements this verbatim.
+  const seed = await mnemonicToSeed(mnemonic, "");
+  const prk = extract(sha256, seed, HKDF_SALT);
+  const xScalar = expand(sha256, prk, INFO_X25519, 32);
+  const edSeed = expand(sha256, prk, INFO_ED25519, 32);
+  return {
+    mnemonic,
+    xScalar,
+    xPub: x25519.getPublicKey(xScalar),
+    edSeed,
+    edPub: ed25519.getPublicKey(edSeed),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Link state — strict receiver state machine (§5.6) + seq gates (§7.3).
+// ---------------------------------------------------------------------------
+type Phase =
+  | "IDLE"
+  | "AWAIT_PUBKEY"
+  | "AWAIT_SERVER_HELLO"
+  | "ESTABLISHED"
+  | "TORN_DOWN";
+
 type Sender = 'user' | 'assistant';
 
-// The blueprint for a single chat message.
-interface ChatMessage {
-  seq: number;        // a counter/ID number for ordering messages (0, 1, 2, ...)
-  text: string;       // the actual words of the message
-  type: string;       // a label for the kind of message (e.g. 'msg')
-  sender: Sender;     // who sent it: 'user' or 'assistant' (see Sender above)
-  timestamp: string;  // a human-readable time, e.g. "3:42:10 PM"
-}
 
 
 /* ----------------------------------------------------------------------------
@@ -87,27 +162,7 @@ interface ChatMessage {
  * -------------------------------------------------------------------------- */
 export default function ChatApp() {
 
-  /* ------------------------------------------------------------------------
-   * STATE = the component's live memory.
-   * Each useState gives us TWO things: the current value, and a function to
-   * change it. Whenever we call the "set" function, React automatically
-   * redraws the screen to reflect the new value. Pattern:
-   *     const [value, setValue] = useState(startingValue);
-   * ---------------------------------------------------------------------- */
-
-  // The full list of chat messages shown on screen. Starts empty ([]).
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
-
-    // Whatever the user is currently typing in the text box. Starts blank ('').
-    const [inputValue, setInputValue] = useState('');
-
-    // true once we're connected to the server, false otherwise (drives the
-    // "Online" / "Connecting…" label in the header).
-    const [isConnected, setIsConnected] = useState(false);
-
-    // true while we're waiting for the assistant's reply (shows the "…" bubble).
-    const [isTyping, setIsTyping] = useState(false);
-    
+   
 
 
     // ---- Sequence state -------------------------------------------------------

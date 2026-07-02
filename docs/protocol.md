@@ -11,8 +11,9 @@ Architecture context (KB `threat-model.md`): L4 is "RFC 9180 HPKE using X25519,
 HKDF-SHA-256, and ChaCha20-Poly1305"; the handshake "binds key material to a
 signed transcript"; "monotonic sequence numbers [are] bound into AAD"; and
 "direction [is] bound into AAD", with **session context bound via a per-session
-`SESSION_ID` derived from the handshake transcripts (§3.0)** so a sealed message
-cannot be reflected into a different session.
+`SESSION_ID` derived from the handshake transcripts (§3.0)** and the **message type
+bound into AAD (§3.0.1)** so a sealed message cannot be reflected into a different
+session or reinterpreted as a different frame kind.
 
 ---
 
@@ -31,6 +32,7 @@ The following are frozen decisions you must paste in verbatim.
 | 7 | Transcript layout hello | `"echovault/hello/v1"` | D013 |
 | 8 | Transcript layout server_hello | `"echovault/server_hello/v1"` | D013 |
 | 9 | `SESSION_ID` derivation | `SHA-256(T_hello ‖ T_server_hello)[:16]` — 16 bytes (§3.0) | D013 |
+| 10 | AAD message-type code | `msg = 0x01` (1 byte; `0x02`/`0x03` reserved for hello/server_hello, never sealed) — §3.0.1 | D020 |
 
 ---
 
@@ -56,6 +58,7 @@ Derived lengths used throughout:
 | — | Ed25519 public key | 32 |
 | — | Ed25519 signature | 64 |
 | — | `SESSION_ID` (SHA-256 truncated) | 16 |
+| — | AAD `TYPE` code | 1 |
 
 ---
 
@@ -131,9 +134,9 @@ The Ed25519 key pair is built from `ed25519_seed` the normal way (`Ed25519Privat
 
 The AAD ("additional authenticated data") is a fixed label that the AEAD
 authenticates but does **not** encrypt. It binds every message to the app, the
-**session**, the direction, and its position in the stream.
+**session**, the direction, the **frame type**, and its position in the stream.
 
-### 3.0 Session identifier (`SESSION_ID`) — NEW (Step-1 F2 fix)
+### 3.0 Session identifier (`SESSION_ID`)
 
 `SESSION_ID` binds every sealed message to the *specific handshake instance* that
 established the keys, so a ciphertext captured in one session cannot be replayed
@@ -158,14 +161,38 @@ SESSION_ID = SHA-256( T_hello ‖ T_server_hello )   [first 16 bytes]
 - It is fixed for the lifetime of a link and identical for both directions of that
   link. On epoch/link rotation (§7.3) a fresh handshake yields a fresh `SESSION_ID`.
 
+### 3.0.1 Message-type code (`TYPE`) — Step-2 S5 fix (D020)
+
+`TYPE` is a **1-byte code** that binds the *kind* of frame into the AEAD, so a sealed
+payload cannot be reinterpreted as a different frame class. The wire `type` string
+(§5) is convenience routing metadata and is **not** trusted on its own; `TYPE` is the
+authenticated form.
+
+| Frame | `TYPE` code | Sealed? |
+|-------|-------------|---------|
+| `msg` | `0x01` | yes (AEAD-sealed; this is the only sealed frame type) |
+| `hello` | `0x02` (reserved) | no (Ed25519-signed handshake frame, no AAD) |
+| `server_hello` | `0x03` (reserved) | no (Ed25519-signed handshake frame, no AAD) |
+
+- For every `msg`, `TYPE = 0x01`. The receiver reconstructs the AAD using the `TYPE`
+  code for the frame class it **expects in the current state** (§5.6), *not* whatever
+  the wire `type` string claims — if the wire `type` was flipped, the reconstructed
+  AAD won't match what the sender sealed and `open()` fails.
+- `0x02`/`0x03` are reserved so that if a future version seals handshake material, the
+  codes cannot collide with `msg`. They never appear in an AAD today (those frames are
+  signed, not sealed).
+- `TYPE` is **derived, never transmitted** as a separate field; like the rest of the
+  AAD both sides supply it locally.
+
 ### 3.1 Layout — fixed order, no separators
 
 ```
-AAD = STATE ‖ SESSION_ID ‖ DIRECTION ‖ SEQ8
-        │         │            │          └── seq as 8-byte big-endian unsigned (uint64)
-        │         │            └───────────── direction token, ASCII bytes (§0 item 4)
-        │         └────────────────────────── SHA-256(T_hello ‖ T_server_hello)[:16] (§3.0)
-        └──────────────────────────────────── the constant ASCII bytes "echovault"
+AAD = STATE ‖ SESSION_ID ‖ DIRECTION ‖ TYPE ‖ SEQ8
+        │         │            │         │       └── seq as 8-byte big-endian unsigned (uint64)
+        │         │            │         └────────── 1-byte frame-type code (msg = 0x01, §3.0.1)
+        │         │            └──────────────────── direction token, ASCII bytes (§0 item 4)
+        │         └───────────────────────────────── SHA-256(T_hello ‖ T_server_hello)[:16] (§3.0)
+        └─────────────────────────────────────────── the constant ASCII bytes "echovault"
 ```
 
 | Segment | Value | Encoding | Length |
@@ -173,33 +200,36 @@ AAD = STATE ‖ SESSION_ID ‖ DIRECTION ‖ SEQ8
 | `STATE` | `"echovault"` | ASCII bytes `65 63 68 6F 76 61 75 6C 74` | 9 |
 | `SESSION_ID` | `SHA-256(T_hello ‖ T_server_hello)[:16]` (§3.0) | raw bytes | 16 |
 | `DIRECTION` | `"c2s"` (browser→server) or `"s2c"` (server→browser) | ASCII bytes | 3 |
+| `TYPE` | frame-type code, `msg = 0x01` (§3.0.1) | 1 raw byte | 1 |
 | `SEQ8` | message counter | 8-byte **big-endian** unsigned | 8 |
 
 - **No separator bytes, no length prefixes.** Every segment is fixed-length, so
   the concatenation is unambiguous. Concatenation order is exactly
-  `STATE → SESSION_ID → DIRECTION → SEQ8`.
-- With the placeholder tokens the AAD is a fixed **36 bytes** (9 + 16 + 3 + 8).
-- Example (`seq = 0`, browser→server), with `SESSION_ID` shown as `SS…SS`:
-  `65 63 68 6f 76 61 75 6c 74` ‖ `SS…SS (16 bytes)` ‖ `63 32 73` ‖ `00 00 00 00 00 00 00 00`.
+  `STATE → SESSION_ID → DIRECTION → TYPE → SEQ8`.
+- With the placeholder tokens the AAD is a fixed **37 bytes** (9 + 16 + 3 + 1 + 8).
+- Example (`seq = 0`, browser→server, `msg`), with `SESSION_ID` shown as `SS…SS`:
+  `65 63 68 6f 76 61 75 6c 74` ‖ `SS…SS (16 bytes)` ‖ `63 32 73` ‖ `01` ‖ `00 00 00 00 00 00 00 00`.
 
 ### 3.2 The AAD is NEVER on the wire
 
 The AAD is passed only as the `aad` argument to seal/open. It is **not** a JSON
 field and appears in **no** frame. Both sides reconstruct it independently from
 values they already hold (`STATE` is constant, `SESSION_ID` is computed from the
-handshake transcripts (§3.0), `DIRECTION` is known per link, `SEQ8` comes from the
+handshake transcripts (§3.0), `DIRECTION` is known per link, `TYPE` is the code for
+the frame class expected in the current state (§3.0.1 / §5.6), `SEQ8` comes from the
 `msg.seq` field). If the receiver rebuilds AAD with a different session, direction,
-or sequence value, `open()` fails — this rejects cross-session reflection,
-direction-swap, and reflection mistakes, and supports replay/reorder detection.
+frame type, or sequence value, `open()` fails — this rejects cross-session
+reflection, direction-swap, **frame-type confusion**, and reflection mistakes, and
+supports replay/reorder detection.
 
-**Replay protection is partial by default (F3 clarification).** An exact replay of an
-*already-consumed* frame fails to `open()` because the stateful HPKE context has
-already advanced past that message — but this is a **fail-closed side effect that
-also desynchronizes the stream, not a clean replay check**. Complete replay/reorder
-handling requires the receiver to track the expected next `seq` per direction and
-reject duplicates/rollbacks *before* calling `open()` (§7.3). Until that tracking is
-implemented, document replay protection as **partial** (see `threat-model.md`,
-"Replay and Sequence Number Limits").
+**Replay protection is enforced, fail-closed (Step-2 S4 fix, D019).** The receiver
+tracks the expected next `seq` per direction and applies the ordering check in §7.3
+*before* calling `open()`. The chosen policy is **teardown-and-rehandshake**: any
+duplicate/rollback/out-of-order `seq`, **or** a `seq`-correct frame that fails `open()`
+(tamper / AAD mismatch), causes the receiver to abort the link and require a fresh
+handshake (new `enc` + `hello`/`server_hello`). It never silently skips, resyncs, or
+continues on a suspect context. This upgrades the earlier "partial" replay posture to
+**enforced**.
 ---
 
 ## 4. Transcript layout (Ed25519-signed)
@@ -238,7 +268,6 @@ sig = Ed25519_Sign(server_ed25519_priv, T_pubkey)
 | 2 | `server_x25519` (public) | raw | 32 |
 | 3 | `server_ed25519` (public) | raw | 32 |
 
-
 > **Note (F11 clarification).** The handshake authenticates the **server to the
 > browser**: the browser verifies this signature against the **pinned** server
 > Ed25519 key. The browser's `hello` signature (§4.2) is **trust-on-first-use** — it
@@ -266,7 +295,6 @@ pin. The browser MUST, on receiving the `/pubkey` response, in order:
   §4.3) would then validate against the attacker's key. There is no first-use exception.
 - If no pin is provisioned, the client MUST refuse to run the E2E handshake (fail
   closed) rather than pin-on-first-use.
-
 
 ### 4.2 `hello` — signed by the **browser** Ed25519 key
 
@@ -304,6 +332,7 @@ T_server_hello = "echovault/server_hello/v1"  (25 ASCII bytes)
                                                               total = 185 bytes
 sig = Ed25519_Sign(server_ed25519_priv, T_server_hello)
 ```
+
 #### 4.3.1 Mandatory `server_hello` acceptance gate — closes reply-direction key substitution (S1)
 
 **Motivation (do not remove).** The browser→server (c2s) direction seals to the server's
@@ -347,7 +376,6 @@ The browser MUST, on receiving `server_hello`, perform **all** of the following 
   to some other server key). Note this does **not** authenticate *which* browser is
   talking (browser identity is out of scope, §4.1 note) — it only ensures the client
   sealed to this server.
-
 
 **Rule:** every field inside a transcript is **raw** (never base64). Labels are
 ASCII. The order above is normative.
@@ -405,7 +433,6 @@ anywhere in EchoVault.**
 > wire (the browser already holds the authoritative copies); resending them would be
 > attacker-controlled input and MUST NOT be trusted if present.
 
-
 ### 5.4 `msg`  (either direction, one per note)
 
 ```json
@@ -423,6 +450,9 @@ anywhere in EchoVault.**
   exceeds JavaScript's safe-integer range, so it must not be a JSON number.
 - Note: a steady-state `msg` frame is `{ type, seq, ct }` — **`enc` appears only in
   the handshake** (`hello` / `server_hello`), not in every message.
+- The wire `type` here is routing convenience only; its **authenticated** form is the
+  `TYPE = 0x01` byte inside the AAD (§3.0.1). A flipped wire `type` is caught by the
+  state machine (§5.6) and, for a sealed frame, by AAD mismatch on `open()`.
 
 ### 5.5 No `iv` field — anywhere
 
@@ -430,6 +460,27 @@ anywhere in EchoVault.**
 not transmitted as random IVs:
 
 - No nonce transmitted; library derives it per-message internally. 
+
+### 5.6 Strict receiver state machine (Step-2 S5 fix, D020)
+
+The `type` field is untrusted routing metadata, so the receiver MUST NOT dispatch on it
+blindly. Each endpoint enforces an explicit phase and accepts **only** the frame
+type(s) valid in that phase; anything else is rejected per §7.4 (no parsing, no
+dispatch into another handler):
+
+| Phase | Endpoint | Accepts | Rejects |
+|-------|----------|---------|---------|
+| `AWAIT_PUBKEY` | browser | `/pubkey` response | anything else |
+| `AWAIT_HELLO` | server | `hello` | `server_hello`, `msg`, unknown |
+| `AWAIT_SERVER_HELLO` | browser | `server_hello` | `hello`, `msg`, unknown |
+| `ESTABLISHED` | both | `msg` (only) | `hello`, `server_hello`, unknown |
+
+- In `ESTABLISHED`, a frame that routes as anything but `msg` is dropped without
+  touching the HPKE context. For a `msg`, the receiver reconstructs the AAD with
+  `TYPE = 0x01` (§3.0.1); a wire `type` that was flipped to something else either never
+  reaches `open()` (state machine) or fails `open()` (AAD `TYPE` mismatch) — belt and
+  suspenders.
+- Unknown / unexpected `type` values are a §7.4 uniform rejection, never a crash.
 
 ---
 
@@ -452,6 +503,7 @@ MUST NOT appear on the wire.
 | `INFO_X25519`, `INFO_ED25519` | key derivation | ASCII/UTF-8 bytes, verbatim (no base64) |
 | `STATE` (`"echovault"`), `DIRECTION` | inside AAD | ASCII bytes, verbatim (no base64) |
 | `SESSION_ID` | inside AAD (derived, §3.0) | raw bytes (SHA-256 truncated); never on the wire |
+| `TYPE` | inside AAD (derived, §3.0.1) | 1 raw byte (`msg = 0x01`); never on the wire |
 | transcript labels (`"echovault/hello/v1"`, …) | inside signed bytes | ASCII bytes, verbatim |
 
 Rationale for the split: base64url is JSON/URL/header-safe; dropping padding
@@ -498,9 +550,9 @@ base nonce, and sequence counter internally.
 ### 7.2 Sealing / opening message `seq`
 
 ```
-aad       = STATE ‖ SESSION_ID ‖ DIRECTION ‖ I2OSP(seq, 8)  # §3
+aad       = STATE ‖ SESSION_ID ‖ DIRECTION ‖ 0x01 ‖ I2OSP(seq, 8)  # §3, TYPE=msg
 ct        = ctx.seal(pt, aad) (recipient: ctx.open(ct, aad))
-wire      = { "seq": hex(I2OSP(seq, 8)), "ct": base64url(ct) }
+wire      = { "type": "msg", "seq": hex(I2OSP(seq, 8)), "ct": base64url(ct) }
 ```
 
 `ct` is HPKE's AEAD output (ciphertext ‖ 16-byte tag). HPKE's internal sequence
@@ -509,31 +561,50 @@ automatically and it is never exposed. The `seq` we place in the AAD is the
 **app-level** counter (8-byte big-endian) and MUST track the context's internal
 sequence number one-for-one (both start at 0, both +1 per message per direction).
 
-### 7.3 seq, replay, and reordering
+### 7.3 seq, replay, and reordering — receiver enforcement (Step-2 S4 fix, D019)
 
-Two consequences of letting HPKE own the counter:
+Letting HPKE own the counter means each direction is a single strictly-in-order
+context. The receiver MUST enforce ordering explicitly. The chosen policy is
+**teardown-and-rehandshake** — a single, fail-closed rule for every fault:
 
-- **In-order delivery per direction.** Because the nonce follows HPKE's internal
-  counter, sender and receiver must process each direction's stream in order. A
-  dropped or reordered frame desynchronizes the counters and `open()` fails.
-- **`seq` stays for the replay/reorder story.** The `seq` bound into the AAD is an
-  authenticated position marker the receiver can log and check: reject any frame
-  whose `seq` is not the expected next value. Per KB `threat-model.md`, protection
-  is only complete if the **receiver tracks the expected `seq` per link** and
-  rejects duplicates/rollbacks; document it as partial if not implemented.
+1. **`seq` gate, *before* `open()`.** Keep `expected_next_seq` per direction (starts at
+   0, +1 per accepted `msg`). On each incoming `msg`, if `wire.seq != expected_next_seq`
+   (a duplicate, rollback, or gap — i.e. replay/reorder), **do not** call `open()`, and
+   **tear the link down** (§7.4) requiring a fresh handshake.
+2. **`open()` failure.** If `seq` is correct but `open()` fails (tampered `ct`/tag, or an
+   AAD mismatch such as a flipped `TYPE`/`DIRECTION`), the context state can no longer be
+   trusted to be in sync — **tear the link down** and require a fresh handshake.
 
-> HPKE refuses to `seal` past its per-context message limit (`AEAD` nonce space).
-> Before that (far beyond demo needs) rotate the link with a fresh `enc` and a new
-> `hello` / `server_hello` (which also mints a fresh `SESSION_ID`, §3.0). This is the
-> same epoch/session rotation that D009/D014 name as future work. Note: rotating the
-> *static identity* key adds no forward secrecy on its own — real forward secrecy
-> would require a fresh **ephemeral recipient** key per epoch (§8).
----
+In both cases the link is abandoned and re-established via a new `enc` +
+`hello`/`server_hello` (which mints a fresh `SESSION_ID`, §3.0). The receiver never
+skips a `seq`, never attempts to resync, and never continues on a suspect context.
+
+> **Why teardown, not reject-and-continue.** With a single strictly-in-order HPKE
+> context there is no safe way to "drop one frame and keep going" once anything is out of
+> order — the app `seq` and HPKE's internal counter can silently diverge. Failing the
+> whole link closed is the honest, auditable behavior and removes any ambiguity about
+> context state. **Tradeoff (accepted):** an active proxy can force a reconnect by
+> injecting a single bad/duplicate frame — a denial-of-service lever, which is explicitly
+> out of scope (availability). We prefer a clean teardown over a silently desynchronized
+> stream.
+
+> **In-order delivery per direction.** Because the nonce follows HPKE's internal
+> counter, sender and receiver process each direction's stream in order. Step-2's `seq`
+> gate turns "a dropped/reordered/duplicated frame silently breaks the context" into an
+> explicit, logged, fail-closed teardown.
+
+> **Ceiling / rotation.** HPKE refuses to `seal` past its per-context message limit
+> (`AEAD` nonce space). Before that (far beyond demo needs) rotate the link with a fresh
+> `enc` and a new `hello` / `server_hello` (which also mints a fresh `SESSION_ID`,
+> §3.0). This is the same epoch/session rotation that D009/D014 name as future work.
+> Note: rotating the *static identity* key adds no forward secrecy on its own — real
+> forward secrecy would require a fresh **ephemeral recipient** key per epoch (§8).
 
 ### 7.4 Decrypt-failure & malformed-frame handling (Step-2 S6)
 
 On **any** `open()` failure, malformed frame, bad base64url, wrong field length, out-of-
-order `seq`, or failed acceptance gate (§4.1.1 / §4.3.1), the receiver MUST:
+order `seq`, unexpected frame type for the current phase (§5.6), or failed acceptance
+gate (§4.1.1 / §4.3.1), the receiver MUST:
 
 - return a **single uniform error** and emit **no** plaintext;
 - reveal **no** distinguishing detail on the wire (no "bad tag" vs "bad seq" vs "unknown
@@ -541,8 +612,11 @@ order `seq`, or failed acceptance gate (§4.1.1 / §4.3.1), the receiver MUST:
 - log the event **without** prompt content (`seq` and a generic reason are fine);
 - fail **closed** — never fall back to an unauthenticated or plaintext path.
 
----
+The link-level consequence follows §7.3: under the chosen **teardown-and-rehandshake**
+policy, **any** ordering fault (`seq` gate) or authentication fault (bad tag / AAD
+mismatch) tears the link down and requires a fresh handshake.
 
+---
 
 ## 8. What is and isn't protected (from `threat-model.md`)
 
@@ -557,6 +631,13 @@ order `seq`, or failed acceptance gate (§4.1.1 / §4.3.1), the receiver MUST:
   redirect the echo reply to its own key (server→browser). Both substitutions cause the
   browser to abort **before** any prompt is sealed. This holds **only** while the server
   Ed25519 identity is a genuine out-of-band pin (§4.1.1); pin-on-first-use voids it.
+- **Replay / reorder / frame-type confusion (Step-2 S4/S5).** The receiver's `seq` gate
+  (§7.3, D019) rejects duplicates/rollbacks/gaps and, under the chosen
+  **teardown-and-rehandshake** policy, fails the link closed on any ordering or
+  authentication fault; the AAD now binds `TYPE` (§3.0.1, D020) and a strict state
+  machine (§5.6) rejects cross-type reinterpretation. Replay protection is therefore
+  **enforced**, not partial. Residual: the teardown behavior gives an active proxy a
+  cheap reconnect/DoS lever — accepted, and out of scope (availability).
 - **Forward secrecy (D009) — corrected.** EchoVault uses HPKE base
   mode. Each message uses a fresh ephemeral on the *sender* side, but **both**
   directions seal to a **static** recipient key (server X25519 for c2s, BIP-39
@@ -588,5 +669,3 @@ These endpoints do not carry decrypted prompt content.
 - `/pubkey` — public keys + transcript signature (§5.1); public by design
 - `/ws` — transport endpoint; prompt payloads appear only as encrypted
   `ct` fields after handshake setup
-```
-

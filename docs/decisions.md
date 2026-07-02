@@ -195,7 +195,7 @@ Go, and Rust.
   server-chosen random nonce into `T_pubkey`/`server_hello`, or reject a `hello` whose
   `enc` was seen recently.
 
-### D018 — Uniform fail-closed decrypt/handshake error handling (hardens Step-2 S6) ✅
+### D018 — Uniform fail-closed decrypt/handshake error handling  ✅
 - **Chose:** On any `open()` failure, malformed frame, bad encoding/length, out-of-order
   `seq`, or failed acceptance gate, return a **single uniform error**, emit no plaintext,
   reveal no distinguishing detail on the wire (no bad-tag vs bad-seq vs unknown-key
@@ -206,3 +206,46 @@ Go, and Rust.
 - **Why:** Satisfies the threat-model integrity requirement ("reject without leaking
   plaintext or sensitive errors") explicitly, avoids padding/oracle-style side channels,
   and gives the Step-3 tamper/malformed tests (T9/T10) a well-defined expected result.
+
+### D019 — Enforce replay/reorder with teardown-and-rehandshake ✅
+- **Chose:** Make receiver-side per-link `seq` tracking **mandatory**, with a single
+  fail-closed policy — **teardown-and-rehandshake** (protocol.md §7.3). Keep
+  `expected_next_seq` per direction; check it *before* `open()`. Any duplicate / rollback
+  / gap in `seq`, **or** any `seq`-correct frame that fails `open()` (tamper / AAD
+  mismatch), aborts the link and forces a fresh handshake (new `enc` + hello/
+  server_hello, new `SESSION_ID`). The receiver never skips a `seq`, never resyncs, never
+  continues on a suspect context.
+- **Rejected:** (a) Leaving replay protection "partial"/optional. (b) **Drop-and-continue**
+  — dropping the offending frame and keeping the link alive.
+- **Why:** With a single strictly-in-order HPKE context per direction there is no safe way
+  to "drop one frame and keep going": the app-level `seq` and HPKE's internal counter can
+  silently diverge, and a receiver that guesses wrong ends up on a desynchronized context
+  that still *looks* live. Failing the whole link closed is the honest, auditable
+  behavior and makes the replay/reorder integrity claim **unconditional** (was "partial",
+  D-note under §3.2/§7.3). **Tradeoff (accepted):** an active proxy can force a reconnect
+  by injecting one bad/duplicate frame — a denial-of-service lever, which is explicitly
+  out of scope (availability). We prefer a clean teardown over a silently desynchronized
+  stream. Step-3's pen test will exercise both the replay-reject and the tamper-teardown
+  paths (T9-style).
+
+### D020 — Bind message `TYPE` into the AAD + strict receiver state machine ✅
+- **Chose:** Add a fixed **1-byte `TYPE` code** to the AAD (`msg = 0x01`; `0x02`/`0x03`
+  reserved for hello/server_hello, which are signed not sealed), making the AAD
+  `STATE ‖ SESSION_ID ‖ DIRECTION ‖ TYPE ‖ SEQ8` = **37 bytes** (was 36). Also enforce a
+  **strict receiver state machine** (protocol.md §5.6) that accepts only the frame
+  type(s) valid in the current handshake phase. The wire `type` string is untrusted
+  routing metadata; `TYPE` is its authenticated form (§3.0.1).
+- **Rejected:** (a) Leaving `type` unauthenticated. (b) State-machine-only (Branch B) with
+  no AAD change — chose the full cryptographic binding (Branch A) instead.
+- **Why:** `type` currently sits in the JSON frame, outside both the ciphertext and the
+  AAD, so an active proxy can flip `"msg"→"hello"` to push a payload into the handshake
+  code path (parser/state-machine confusion, cheap DoS). Binding `TYPE` into the AAD means
+  a sealed frame can only `open()` under the type the sender intended, and the state
+  machine refuses cross-type routing before dispatch — belt and suspenders. Branch A also
+  future-proofs: if a later version seals a new frame class, the reserved codes stop it
+  from being confused with `msg`.
+- **Cost / ripple (paid deliberately):** this changes the **frozen AAD contract** (D013).
+  The 36→37-byte layout, §3.1 table/diagram/example, and §7.2 pseudocode all move, and
+  **both implementations must compute the new AAD byte-identically or every `open()`
+  fails** — so the D012 interop test MUST be re-run for the `TYPE` byte alongside
+  `SESSION_ID`. Batched here with S4 so the contract re-freeze happens once.

@@ -161,7 +161,7 @@ SESSION_ID = SHA-256( T_hello ‖ T_server_hello )   [first 16 bytes]
 - It is fixed for the lifetime of a link and identical for both directions of that
   link. On epoch/link rotation (§7.3) a fresh handshake yields a fresh `SESSION_ID`.
 
-### 3.0.1 Message-type code (`TYPE`) — Step-2 S5 fix (D020)
+### 3.0.1 Message-type code (`TYPE`) — (D020)
 
 `TYPE` is a **1-byte code** that binds the *kind* of frame into the AEAD, so a sealed
 payload cannot be reinterpreted as a different frame class. The wire `type` string
@@ -222,7 +222,7 @@ frame type, or sequence value, `open()` fails — this rejects cross-session
 reflection, direction-swap, **frame-type confusion**, and reflection mistakes, and
 supports replay/reorder detection.
 
-**Replay protection is enforced, fail-closed (Step-2 S4 fix, D019).** The receiver
+**Replay protection is enforced, fail-closed (D019).** The receiver
 tracks the expected next `seq` per direction and applies the ordering check in §7.3
 *before* calling `open()`. The chosen policy is **teardown-and-rehandshake**: any
 duplicate/rollback/out-of-order `seq`, **or** a `seq`-correct frame that fails `open()`
@@ -243,7 +243,7 @@ All fields are raw, fixed-length, concatenated with **no separators**. Each
 transcript begins with a distinct ASCII **domain-separation label** so a signature
 for one message type can never be replayed as another.
 
-> **⚠️ Signature verification is necessary but NOT sufficient (Step-2 S1/S2).**
+> **⚠️ Signature verification is necessary but NOT sufficient (update).**
 > A valid Ed25519 signature only proves *the holder of some signing key* produced the
 > transcript — it does **not** prove that key is the one you expect, nor that the
 > *contents* of the transcript are the values you sent. Every transcript check in this
@@ -461,7 +461,7 @@ not transmitted as random IVs:
 
 - No nonce transmitted; library derives it per-message internally. 
 
-### 5.6 Strict receiver state machine (Step-2 S5 fix, D020)
+### 5.6 Strict receiver state machine (D020)
 
 The `type` field is untrusted routing metadata, so the receiver MUST NOT dispatch on it
 blindly. Each endpoint enforces an explicit phase and accepts **only** the frame
@@ -475,12 +475,22 @@ dispatch into another handler):
 | `AWAIT_SERVER_HELLO` | browser | `server_hello` | `hello`, `msg`, unknown |
 | `ESTABLISHED` | both | `msg` (only) | `hello`, `server_hello`, unknown |
 
-- In `ESTABLISHED`, a frame that routes as anything but `msg` is dropped without
-  touching the HPKE context. For a `msg`, the receiver reconstructs the AAD with
-  `TYPE = 0x01` (§3.0.1); a wire `type` that was flipped to something else either never
-  reaches `open()` (state machine) or fails `open()` (AAD `TYPE` mismatch) — belt and
+- In `ESTABLISHED`, a frame that routes as anything but `msg` is a **fault**: it is not
+  passed to the HPKE context, and — consistent with the fail-closed policy of §7.3 — the
+  receiver **tears the link down and requires a fresh handshake** (it does *not*
+  silently drop-and-continue). Rationale: with a single strictly-in-order context per
+  direction, "dropping" a mid-stream frame would desync the counter anyway, so the very
+  next legitimate `msg` would fail the `seq` gate and force teardown regardless — the
+  honest, unambiguous behavior is to tear down immediately on the wrong-type frame.
+- For a legitimate `msg`, the receiver reconstructs the AAD with `TYPE = 0x01` (§3.0.1);
+  a wire `type` that was flipped to something else either never reaches `open()` (state
+  machine, above) or fails `open()` (AAD `TYPE` mismatch → teardown per §7.3) — belt and
   suspenders.
-- Unknown / unexpected `type` values are a §7.4 uniform rejection, never a crash.
+- Unknown / unexpected `type` values are a §7.4 uniform rejection (then teardown per
+  §7.3), never a crash.
+- Note: this makes a wire-`type` flip another instance of the accepted teardown/DoS
+  lever (§7.3) — an on-path proxy can force a reconnect — which stays out of scope
+  (availability).
 
 ---
 
@@ -540,7 +550,7 @@ recipient:  ctx_R      = SetupBaseR(enc, skR, info = "echovault/hpke/v1")
 is ASCII bytes (freeze as v1). Nothing is exported; each context holds its key,
 base nonce, and sequence counter internally.
 
-> **Handshake freshness is security-critical (Step-2 S3).** The server MUST run a
+> **Handshake freshness is security-critical .** The server MUST run a
 > **fresh** `SetupBaseS` (a new ephemeral `enc`) for **every** connection. Reusing an
 > `enc`/context across connections makes two handshakes produce the same `SESSION_ID`
 > and reopens whole-session replay (a proxy could replay a recorded `hello` and reuse
@@ -561,7 +571,7 @@ automatically and it is never exposed. The `seq` we place in the AAD is the
 **app-level** counter (8-byte big-endian) and MUST track the context's internal
 sequence number one-for-one (both start at 0, both +1 per message per direction).
 
-### 7.3 seq, replay, and reordering — receiver enforcement (Step-2 S4 fix, D019)
+### 7.3 seq, replay, and reordering — receiver enforcement (fix, D019)
 
 Letting HPKE own the counter means each direction is a single strictly-in-order
 context. The receiver MUST enforce ordering explicitly. The chosen policy is
@@ -589,7 +599,7 @@ skips a `seq`, never attempts to resync, and never continues on a suspect contex
 > stream.
 
 > **In-order delivery per direction.** Because the nonce follows HPKE's internal
-> counter, sender and receiver process each direction's stream in order. Step-2's `seq`
+> counter, sender and receiver process each direction's stream in order. `seq`
 > gate turns "a dropped/reordered/duplicated frame silently breaks the context" into an
 > explicit, logged, fail-closed teardown.
 
@@ -600,7 +610,7 @@ skips a `seq`, never attempts to resync, and never continues on a suspect contex
 > Note: rotating the *static identity* key adds no forward secrecy on its own — real
 > forward secrecy would require a fresh **ephemeral recipient** key per epoch (§8).
 
-### 7.4 Decrypt-failure & malformed-frame handling (Step-2 S6)
+### 7.4 Decrypt-failure & malformed-frame handling 
 
 On **any** `open()` failure, malformed frame, bad base64url, wrong field length, out-of-
 order `seq`, unexpected frame type for the current phase (§5.6), or failed acceptance
@@ -625,13 +635,13 @@ mismatch) tears the link down and requires a fresh handshake.
   can read.
 - HPKE-inside-TLS reduces plaintext exposure at TLS-terminating intermediaries
   that are not the intended reader.
-- **Key substitution — both directions (Step-2 S1/S2).** With the mandatory acceptance
+- **Key substitution — both directions (update).** With the mandatory acceptance
   gates (§4.1.1 pin comparison, §4.3.1 `server_hello` self-key check), an active
   TLS-terminating proxy can neither substitute the server HPKE key (browser→server) nor
   redirect the echo reply to its own key (server→browser). Both substitutions cause the
   browser to abort **before** any prompt is sealed. This holds **only** while the server
   Ed25519 identity is a genuine out-of-band pin (§4.1.1); pin-on-first-use voids it.
-- **Replay / reorder / frame-type confusion (Step-2 S4/S5).** The receiver's `seq` gate
+- **Replay / reorder / frame-type confusion (update).** The receiver's `seq` gate
   (§7.3, D019) rejects duplicates/rollbacks/gaps and, under the chosen
   **teardown-and-rehandshake** policy, fails the link closed on any ordering or
   authentication fault; the AAD now binds `TYPE` (§3.0.1, D020) and a strict state

@@ -223,8 +223,8 @@ Go, and Rust.
   that still *looks* live. Failing the whole link closed is the honest, auditable
   behavior and makes the replay/reorder integrity claim **unconditional** (was "partial",
   D-note under §3.2/§7.3). **Tradeoff (accepted):** an active proxy can force a reconnect
-  by injecting one bad/duplicate frame — a denial-of-service lever, which is explicitly
-  out of scope (availability). We prefer a clean teardown over a silently desynchronized
+  by injecting one bad/duplicate frame — a denial-of-service lever, which notifys the user 
+  that there is something amiss. We prefer a clean teardown over a silently desynchronized
   stream. Step-3's pen test will exercise both the replay-reject and the tamper-teardown
   paths (T9-style).
 

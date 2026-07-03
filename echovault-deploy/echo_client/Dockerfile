@@ -7,10 +7,12 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
-# The WebSocket URL is baked into the browser bundle at BUILD time
+# The API base URL is baked into the browser bundle at BUILD time
 # (NEXT_PUBLIC_* vars are inlined by Next.js). Point it at the proxy hostname.
-ARG NEXT_PUBLIC_WS_URL=wss://echo.server.test
-ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
+# page.tsx reads NEXT_PUBLIC_API_URL and DERIVES the WebSocket URL from it
+# (https → wss), so this single https:// value covers both /pubkey and /ws.
+ARG NEXT_PUBLIC_API_URL=https://echo.server.test
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 COPY package.json package-lock.json ./
 RUN npm ci

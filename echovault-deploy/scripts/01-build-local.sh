@@ -8,11 +8,12 @@ echo "[*] Creating shared docker network (idempotent)..."
 docker network create proxynet 2>/dev/null || true
 
 echo "[*] Building echo_server:1.0 ..."
-docker build -t echo_server:1.0 ./echo_server
+docker build --no-cache -t echo_server:1.0 ./echo_server
 
-echo "[*] Building echo_client:1.0 (WS URL baked to wss://echo.server.test) ..."
-docker build -t echo_client:1.0 \
-  --build-arg NEXT_PUBLIC_WS_URL=wss://echo.server.test ./echo_client
+# page.tsx reads NEXT_PUBLIC_API_URL (https://) and derives wss:// from it.
+echo "[*] Building echo_client:1.0 (API URL baked to https://echo.server.test) ..."
+docker build  --no-cache -t echo_client:1.0 \
+  --build-arg NEXT_PUBLIC_API_URL=https://echo.server.test ./echo_client
 
 echo "[*] Pulling mitmproxy base image ..."
 docker pull mitmproxy/mitmproxy

@@ -17,6 +17,13 @@ import { CipherSuite, KemId, KdfId, AeadId } from "hpke-js"; // Successfully imp
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+  return out;
+}
+
 
 export default function IdentityPage() {
   const router = useRouter(); // Initialize the router instance
@@ -29,8 +36,8 @@ export default function IdentityPage() {
   const [debugData, setDebugData] = useState<{
         masterSeedHex: string,
         hexSalt: string,
-        info_x25: string,
-        info_ed25: string,
+        info_x25: Uint8Array,
+        info_ed25: Uint8Array,
         sk_x25519: string,
         pk_x25519: string,
         sk_ed25519: string,
@@ -117,9 +124,12 @@ export default function IdentityPage() {
       });
 
       // Generate the WebCrypto X25519 Private Key Object using the raw secret bytes
-      const xPrivateKey = await suite.kem.importKey("raw", xSecret, false); 
+      // const xPrivateKey = await suite.kem.importKey("raw", xSecret, false); 
+      const xPrivateKey = await suite.kem.importKey("raw", xSecret.buffer, false); 
+
       // Generate the WebCrypto X25519 Public Key Object using the raw public bytes
-      const xPublicKey = await suite.kem.importKey("raw", xPubBytes, true);
+      //const xPublicKey = await suite.kem.importKey("raw", xPubBytes, true);
+      const xPublicKey = await suite.kem.importKey("raw", xPubBytes.buffer, true);
 
       // Save derived hex tracking parameters to debug panel
       setDebugData({

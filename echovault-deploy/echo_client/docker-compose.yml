@@ -5,8 +5,9 @@ services:
     build:
       context: .
       args:
-        # Browser will open its WebSocket here (through the proxy, over TLS).
-        NEXT_PUBLIC_WS_URL: wss://echo.server.test
+        # API base the browser fetches /pubkey from (through the proxy, over
+        # TLS). page.tsx derives the WebSocket URL from it: https → wss.
+        NEXT_PUBLIC_API_URL: https://echo.server.test
     container_name: echo_client
     restart: unless-stopped
     # No host ports: ingress is mitmproxy only. Uncomment for local debugging:

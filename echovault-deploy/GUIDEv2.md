@@ -313,7 +313,7 @@ curl http://10.188.199.221:8000/api/health   # should refuse/timeout (proxy is t
 | `docker: command not found` in WSL2 | Enable Docker Desktop → Settings → Resources → **WSL Integration** for your distro; reopen the terminal. |
 | `NET::ERR_CERT_AUTHORITY_INVALID` | CA not trusted in *this* browser's store (Chrome/Edge=OS store on Windows / NSS on Linux; Firefox=own store). Re-do Step 6b and fully restart the browser. |
 | `tls alert certificate unknown` (mitmproxy log) | Browser trusts a **stale** CA (regenerated since install). Remove old "EchoVault Test CA", re-import current `ca.crt`; match the printed fingerprint. |
-| Page loads but stays **Connecting…** | WS URL not baked. Rebuild `echo_client` with `NEXT_PUBLIC_WS_URL=wss://echo.server.test`; check `docker logs echo_server`. |
+| Page loads but stays **Connecting…** | WS URL not baked. Rebuild `echo_client` with `NEXT_PUBLIC_API_URL=https://echo.server.test`; check `docker logs echo_server`. |
 | `404 unknown host` from proxy | Hostname not in `route.py` (only the two `.test` names route). Check the hosts file + SNI. |
 | `ping echo.client.test` fails on Windows | You edited WSL2's `/etc/hosts`, not the **Windows** hosts file. Edit `C:\Windows\System32\drivers\etc\hosts` as Administrator. |
 | `network proxynet not found` | `docker network create proxynet` (the deploy script does this — network before `up`). |

@@ -1,414 +1,686 @@
 /* ============================================================================
- * BOREALIS ASSISTANT — A simple chat app (front end / what the user sees)
+ * BOREALIS ASSISTANT — chat front end, now with EchoVault E2E encryption
  * ============================================================================
  *
- * WHAT IS THIS FILE?
- *   This is ONE screen of a website: a chat window (like ChatGPT). It is
- *   written in "React", which is a popular toolkit for building web pages.
+ * WHAT CHANGED vs the plain chat version?
+ *   1) The mnemonic is loaded from the Identity page (localStorage "mnemonic")
+ *      and turned into the browser's two key pairs (protocol.md §2).
+ *   2) A "Server key" text box + Verify button: paste the server's Ed25519
+ *      public key (the PIN printed in the server console). Verify fetches
+ *      /pubkey and runs the §4.1.1 pin gate; a green stoplight means the
+ *      served key matched your pin AND its signature checked out.
+ *   3) After a green light, the page runs hexToBytesthe full EchoVault handshake
+ *      (hello / server_hello, §4.2–§4.3) over the WebSocket. Only then is the
+ *      encrypted channel "established" and the Encrypt toggle usable.
+ *   4) When Encrypt is ON, every message you send is sealed in the browser
+ *      (HPKE, ChaCha20-Poly1305) and every echo is opened in the browser —
+ *      a TLS-terminating proxy sees only { type, seq, ct }.
  *
- * THREE LANGUAGES ARE MIXED TOGETHER HERE — here's the 30-second tour:
- *
- *   1) JavaScript / TypeScript  → the "brain". It decides WHAT happens:
- *        what to do when you click "send", how to talk to the server, etc.
- *        (TypeScript is just JavaScript with extra "type" labels that help
- *         catch mistakes, e.g. "this value must be a number".)
- *
- *   2) HTML (written here as "JSX") → the "skeleton". It describes the
- *        visible PIECES on screen: boxes, text, buttons, the input field.
- *        In React, HTML is written right inside the JavaScript using tags
- *        that look like <div>, <button>, <h1>, etc.
- *
- *   3) CSS → the "paint and layout". It decides how things LOOK: colors,
- *        sizes, spacing, rounded corners, animations. All the CSS for this
- *        screen lives in the big text block named `styles` at the BOTTOM.
- *
- * HOW IT TALKS TO THE SERVER:
- *   It uses a "WebSocket" — think of it as a phone line that stays open so
- *   the browser and the server can send messages back and forth instantly,
- *   instead of hanging up and re-dialing for every message.
- *
- * READING ORDER (top to bottom):
- *   A) Setup & imports
- *   B) The shape of a chat message (a TypeScript "type")
- *   C) The component itself: its memory (state), its connection logic,
- *      and the functions that run when you type/send.
- *   D) The visible layout (the HTML/JSX returned at the end).
- *   E) The CSS styles (the big string at the very bottom).
+ * Extra npm packages this page needs (on top of the original):
+ *   npm i @scure/bip39 @noble/hashes @noble/curves \
+ *         @hpke/core @hpke/dhkem-x25519 @hpke/chacha20poly1305
  * ========================================================================== */
 
-
-// "use client" tells the website framework (Next.js) that this screen runs in
-// the visitor's BROWSER (not pre-built on the server). We need this because the
-// chat reacts live to clicks, typing, and incoming messages.
 "use client";
 
-// Bring in ("import") the React tools we need:
-//   useState  → gives a component "memory" that, when changed, redraws the screen
-//   useEffect → runs setup/cleanup code at the right moments (e.g. on first load)
-//   useRef    → a private box to remember a value WITHOUT redrawing the screen
 import React, { useState, useEffect, useRef } from 'react';
+import Link from "next/link";
+import { validateMnemonic, mnemonicToSeed } from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english.js";
+// Crypto building blocks for EchoVault (same libraries the spec was tested with):
+import { sha256 } from "@noble/hashes/sha2.js";              // hashing
+import { extract, expand } from "@noble/hashes/hkdf.js";     // key derivation
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";  // signatures + DH keys
+import { CipherSuite, HkdfSha256 } from "@hpke/core";        // HPKE seal/open
+import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
+import { Chacha20Poly1305 } from "@hpke/chacha20poly1305";
 
 
 /* ----------------------------------------------------------------------------
- * THE SHAPE OF DATA
- * ----------------------------------------------------------------------------
- * Below we describe, in TypeScript, exactly what a chat message looks like.
- * This is like a form template: every message MUST have these fields, and each
- * field has a fixed kind of value. If we ever forget a field or use the wrong
- * kind of value, TypeScript warns us before the app even runs.
+ * ECHOVAULT PROTOCOL CONSTANTS — frozen values from protocol.md §0 (D011/D013).
+ * These byte strings MUST match the server character-for-character, or nothing
+ * will decrypt. Think of them as the "dialect" both sides agreed to speak.
  * -------------------------------------------------------------------------- */
+const te = new TextEncoder();
+const HKDF_SALT = hexToBytes(
+  "65b9295c885b667d3ce7d06afaee50edabb816af6f3b64a763d6b75201e6ed95",
+);
+const INFO_X25519 = te.encode("echovault-x25519-encryption");
+const INFO_ED25519 = te.encode("echovault-ed25519-signing");
+const HPKE_INFO = te.encode("echovault/hpke/v1");
+const LABEL_PUBKEY = te.encode("echovault/pubkey/v1");
+const LABEL_HELLO = te.encode("echovault/hello/v1");
+const LABEL_SERVER_HELLO = te.encode("echovault/server_hello/v1");
+const AAD_STATE = te.encode("echovault");
+const DIR_C2S = te.encode("c2s"); // browser → server
+const DIR_S2C = te.encode("s2c"); // server → browser
+const TYPE_MSG = new Uint8Array([0x01]);
 
-// A message can only come from one of two senders: the human ('user') or the
-// AI ('assistant'). The "|" means "this OR that" and nothing else is allowed.
+// The HPKE cipher suite: X25519 key agreement + SHA-256 KDF + ChaCha20-Poly1305.
+const suite = new CipherSuite({
+  kem: new DhkemX25519HkdfSha256(),
+  kdf: new HkdfSha256(),
+  aead: new Chacha20Poly1305(),
+});
+
+/* ----------------------------------------------------------------------------
+ * SMALL BYTE HELPERS — encoding rules from protocol.md §6.
+ * All binary goes on the wire as base64url WITHOUT padding; seq is 16-char hex.
+ * -------------------------------------------------------------------------- */
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+  return out;
+}
+
+function b64u(raw: Uint8Array): string {
+  let bin = "";
+  raw.forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Strict decoder: refuses standard base64 (+ / =) and wrong-length values.
+function unb64u(s: string, expectedLen: number): Uint8Array {
+  if (typeof s !== "string" || /[+/=]/.test(s)) throw new Error("bad encoding");
+  const bin = atob(
+    s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4),
+  );
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  if (expectedLen >= 0 && out.length !== expectedLen)
+    throw new Error("bad length");
+  return out;
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+}
+
+// hpke-js wants standalone ArrayBuffers, not views into shared memory.
+function ab(u8: Uint8Array): ArrayBuffer {
+  return u8.slice().buffer as ArrayBuffer;
+}
+
+function seqToBytes8(seq: number): Uint8Array {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(seq), false);
+  return out;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+// The 37-byte authentication label sealed into every message (protocol §3.1):
+// app name ‖ session fingerprint ‖ direction ‖ frame type ‖ counter.
+function buildAad(sessionId: Uint8Array, dir: Uint8Array, seq: number): Uint8Array {
+  return concatBytes(AAD_STATE, sessionId, dir, TYPE_MSG, seqToBytes8(seq));
+}
+
+/* ----------------------------------------------------------------------------
+ * IDENTITY — protocol.md §2: one mnemonic → two unrelated key pairs.
+ * The mnemonic comes from the Identity page ("Key Vault"), which saved it in
+ * localStorage under "mnemonic". Same words in = same keys out, every time.
+ * -------------------------------------------------------------------------- */
+interface Identity {
+  xScalar: Uint8Array;  // X25519 private key (decrypts echoes sent to us)
+  xPub: Uint8Array;     // X25519 public key (the server seals echoes TO this)
+  edSeed: Uint8Array;   // Ed25519 private key (signs our half of the handshake)
+  edPub: Uint8Array;    // Ed25519 public key (server checks our signature with this)
+}
+
+async function deriveIdentity(mnemonic: string): Promise<Identity> {
+  // Standard BIP-39 words → 64-byte seed, then HKDF splits it into the two
+  // independent keys using the frozen salt/labels above.
+  const seed = await mnemonicToSeed(mnemonic, "");
+  const prk = extract(sha256, seed, HKDF_SALT);
+  const xScalar = expand(sha256, prk, INFO_X25519, 32);
+  const edSeed = expand(sha256, prk, INFO_ED25519, 32);
+  return {
+    xScalar,
+    xPub: x25519.getPublicKey(xScalar),
+    edSeed,
+    edPub: ed25519.getPublicKey(edSeed),
+  };
+}
+
+/* ----------------------------------------------------------------------------
+ * THE SHAPE OF DATA (unchanged from the original page)
+ * -------------------------------------------------------------------------- */
 type Sender = 'user' | 'assistant';
 
-// The blueprint for a single chat message.
 interface ChatMessage {
   seq: number;        // a counter/ID number for ordering messages (0, 1, 2, ...)
   text: string;       // the actual words of the message
   type: string;       // a label for the kind of message (e.g. 'msg')
-  sender: Sender;     // who sent it: 'user' or 'assistant' (see Sender above)
+  sender: Sender;     // who sent it: 'user' or 'assistant'
   timestamp: string;  // a human-readable time, e.g. "3:42:10 PM"
 }
 
+// Traffic-light states for the server-key check.
+type PinStatus = 'unchecked' | 'valid' | 'invalid';
 
 /* ----------------------------------------------------------------------------
  * THE COMPONENT
- * ----------------------------------------------------------------------------
- * A "component" is a reusable chunk of screen. This one, ChatApp, IS the whole
- * chat window. `export default` means "this is the main thing this file
- * provides" so other files can drop <ChatApp /> onto a page.
- *
- * Everything from here to the closing brace describes ONE chat window:
- * first its memory and behavior (JavaScript), then its appearance (the JSX it
- * `return`s near the bottom).
  * -------------------------------------------------------------------------- */
 export default function ChatApp() {
 
-  /* ------------------------------------------------------------------------
-   * STATE = the component's live memory.
-   * Each useState gives us TWO things: the current value, and a function to
-   * change it. Whenever we call the "set" function, React automatically
-   * redraws the screen to reflect the new value. Pattern:
-   *     const [value, setValue] = useState(startingValue);
-   * ---------------------------------------------------------------------- */
-
-  // The full list of chat messages shown on screen. Starts empty ([]).
+  /* ---------------------------- chat state ------------------------------ */
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-
-  // Whatever the user is currently typing in the text box. Starts blank ('').
   const [inputValue, setInputValue] = useState('');
-
-  // true once we're connected to the server, false otherwise (drives the
-  // "Online" / "Connecting…" label in the header).
   const [isConnected, setIsConnected] = useState(false);
-
-  // true while we're waiting for the assistant's reply (shows the "…" bubble).
   const [isTyping, setIsTyping] = useState(false);
 
-
-  // ---- Sequence state -------------------------------------------------------
-  // c2sSeq : next client→server seq to send. You increment it on each send.
-  // lastS2C: highest server→client seq already accepted (a high-water mark).
-  //          Starts at -1 so the very first server frame (seq 0) is accepted.
-  // Both are reset together inside the socket effect on every (re)connect.
-  //
-  // PLAIN ENGLISH: every message carries a counter number ("seq"). These two
-  // refs remember which numbers we've sent and which we've already received,
-  // so we never show the same reply twice or out of order. We use `useRef`
-  // (not state) because changing a counter should NOT redraw the screen.
+  // ---- Sequence state ----
+  // c2sSeq : next client→server seq to send (must track the HPKE context's
+  //          internal counter one-for-one, so ONLY advance it after a seal).
+  // lastS2C: highest server→client seq already accepted. Starts at -1 so the
+  //          first server frame (seq 0) is accepted. In encrypted mode the
+  //          check is STRICT (must be exactly lastS2C+1): a gap or repeat is
+  //          a protocol fault and tears the channel down (protocol §7.3).
   const c2sSeq = useRef<number>(0);
   const lastS2C = useRef<number>(-1);
 
-  // Persist the single socket instance across renders.
-  // (Holds our one open "phone line" to the server so we can reuse it.)
   const socketRef = useRef<WebSocket | null>(null);
-
-  // Auto-scroll anchor + textarea handle + typing-indicator timeout
-  // endRef        → an invisible marker at the very bottom of the chat; we
-  //                 scroll to it so new messages are always in view.
-  // textareaRef   → a direct handle to the typing box so we can resize it.
-  // typingTimeout → remembers a pending timer (used to auto-hide "typing…").
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /* ------------------------- EchoVault state ---------------------------- */
+  // The pasted server public key (Ed25519, base64url) — the PIN. This is the
+  // demo's out-of-band trust root: it must come to you OUTSIDE the connection
+  // (the server prints it in its own console at startup).
+  const [serverPinInput, setServerPinInput] = useState('sQZN15q8euUzuIcJ6D1t99BR-ltN078vmHq_LJYwpPM');
+  // Traffic light: did the served /pubkey match the pasted pin + valid signature?
+  const [pinStatus, setPinStatus] = useState<PinStatus>('unchecked');
+  const [hasSavedMnemonic, setHasSavedMnemonic] = useState(false);
+  const [channelEstablished, setEncChannel] = useState(false);
+  const [encrypt, setEncrypt] = useState(true);
+  const [statusNote, setStatusNote] = useState('');
 
-  /* ------------------------------------------------------------------------
-   * AUTO-SCROLL
-   * useEffect runs a piece of code AFTER the screen updates. The list in the
-   * square brackets at the end ([messages, isTyping]) is the "watch list":
-   * this code re-runs every time the messages list OR the typing flag changes.
-   * Result: whenever a new message arrives or the "typing…" bubble appears,
-   * we smoothly scroll down to it.
-   * The "?." means "only do this if endRef actually points to something".
-   * ---------------------------------------------------------------------- */
+  // The mnemonic itself, loaded from the Identity page's saved variable.
+  const mnemonicRef = useRef<string>('');
+
+  // Everything crypto about the CURRENT link lives in this one box. It's a
+  // ref (not state) because none of it should redraw the screen, and it must
+  // never be half-updated: teardown wipes it all at once.
+  const link = useRef<{
+    identity: Identity | null;                                            // our keys
+    pinnedEd: Uint8Array | null;                                          // trusted server signing key
+    pinnedX: Uint8Array | null;                                           // server encryption key (adopted via §4.1.1)
+    sender: Awaited<ReturnType<CipherSuite["createSenderContext"]>> | null;   // seals c2s
+    recipient: Awaited<ReturnType<CipherSuite["createRecipientContext"]>> | null; // opens s2c
+    sessionId: Uint8Array | null;                                         // this handshake's fingerprint
+    tHello: Uint8Array | null;                                            // our signed hello bytes
+  }>({ identity: null, pinnedEd: null, pinnedX: null, sender: null, recipient: null, sessionId: null, tHello: null });
+
+  /* ---------------------------- auto-scroll ----------------------------- */
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, isTyping]);
 
-
-  /* ------------------------------------------------------------------------
-   * CONNECT TO THE SERVER (runs ONCE when the chat first appears)
-   * The empty watch list "[]" at the very bottom means "run this setup a
-   * single time, when the component first loads, and never again".
-   * ---------------------------------------------------------------------- */
+  /* --------------- load the mnemonic from the Identity page ------------- */
+  // The Identity page ("Key Vault") stores the mnemonic in localStorage under
+  // the key "mnemonic". We load it once, validate the words, and derive the
+  // browser's key pairs from it. No mnemonic → no identity → the Verify /
+  // handshake path below refuses to run (fail closed).
   useEffect(() => {
-    // Fresh-session baseline. Both counters reset together on every (re)connect:
-    // a new handshake makes the server's s2cSeq restart from 0, so a stale
-    // lastS2C left at its old high value would reject the ENTIRE new session.
-    // By the time onopen fires ("successful open") these are already at zero.
-    c2sSeq.current = 0;   // next c2s seq to send
-    lastS2C.current = -1; // highest s2c seq accepted (nothing yet) 
+    const savedMnemonic = localStorage.getItem("mnemonic") ?? "";
+    if (savedMnemonic.trim() && validateMnemonic(savedMnemonic.trim(), wordlist)) {
+      mnemonicRef.current = savedMnemonic.trim();
+      setHasSavedMnemonic(true);
+      deriveIdentity(mnemonicRef.current)
+        .then((id) => { link.current.identity = id; })
+        .catch(() => setHasSavedMnemonic(false));
+    } else {
+      setHasSavedMnemonic(false);
+    }
+  }, []);
 
-    // Initialize the WebSocket connection once on mount.
-    // Replace with your actual secure WebSocket server URL (e.g., wss://...)
-    // (This line opens the "phone line" to the server.)
-    const wsBase =
-      process.env.NEXT_PUBLIC_WS_URL ??
-      (typeof window !== 'undefined' && window.location.protocol === 'https:'
-        ? `wss://${window.location.host}`
-        : 'ws://localhost:8000');
-    const ws = new WebSocket(`${wsBase}/ws`);
-    socketRef.current = ws; // remember it so other functions can use it later
-
-    // ---- Lifecycle handlers --------------------------------------------------
-    // A WebSocket fires named events. We attach a function to each one to say
-    // "when THIS happens, run THAT". The four events: open, message, error, close.
-
-    // FIRES WHEN: the connection is successfully opened.
-    ws.onopen = () => {
-      console.log('WebSocket connection established.'); // log = note in the dev console
-      setIsConnected(true); // flip the header to "Online"
-    };
-
-    // FIRES WHEN: the server sends us a message.
-    ws.onmessage = (event) => {
-      try {
-        // Messages arrive as plain text in "JSON" format. JSON.parse turns that
-        // text back into a usable object we can read fields from (data.text, etc.).
-        const data = JSON.parse(event.data);
-
-        // A reply landed, so we can stop showing the typing indicator.
-        setIsTyping(false);
-
-        // Frames without a seq can't be ordered or de-duplicated — ignore them.
-        // ("return" here means: stop early and do nothing with this message.)
-        if (data.seq == null) return;
-
-        // ---- lastS2C high-water mark ------------------------------------
-        // Accept a server frame ONLY if its seq is strictly greater than the
-        // highest we've already taken. This one check kills duplicates,
-        // replays and out-of-order/stale frames, and never lets the mark
-        // slide backwards. After a reconnect lastS2C is back at -1, so the
-        // new session's seq 0 is accepted instead of rejected as "old".
-        if (data.seq <= lastS2C.current) return;
-
-        // Passed the gate → advance the mark to this seq.
-        lastS2C.current = data.seq;
-
-        // Build a tidy ChatMessage object from the raw server data.
-        // ("??" means "use the thing on the left, but if it's missing, use the
-        //  fallback on the right instead" — a safety net against blank fields.)
-        const incoming: ChatMessage = {
-          // Keep the backend's sequence number so send + echo share the same seq
-          seq: data.seq,
-          // Capture the 'payload' field from your python backend dictionary
-          text: data.text ?? '',
-          // Map based on your 'type' field or fallback to 'msg'
-          type: data.type != null ? data.type : 'msg', // echoes render left
-          sender: 'assistant',
-          // Safely capture the passed backend timestamp
-          timestamp: data.timestamp ?? new Date().toLocaleTimeString(),
-        };
-
-        // Add the new message to the end of the list.
-        // Functional update so back-to-back frames in the same tick can't
-        // clobber each other.
-        // (The "(prev) => [...prev, incoming]" means: take the previous list,
-        //  copy all of it, and add the new message at the end.)
-        setMessages((prev) => [...prev, incoming]);
-      } catch (error) {
-        // If the incoming text wasn't valid JSON, don't crash — just log it.
-        console.error('Failed to parse incoming message:', error);
-      }
-    };
-
-    // FIRES WHEN: something goes wrong with the connection.
-    ws.onerror = (error) => {
-      console.error('WebSocket error observed:', error);
-    };
-
-    // FIRES WHEN: the connection closes (server went away, network dropped, etc.).
-    ws.onclose = () => {
-      console.log('WebSocket connection closed.');
-      setIsConnected(false); // flip the header back to "Connecting…"
-    };
-
-    // Clean up on unmount.
-    // This "return a function" is React's cleanup step: it runs when the chat
-    // window is removed from the page. We cancel any pending timer and hang up
-    // the phone line so nothing keeps running in the background.
+  // Hang up the phone line if the user leaves the page.
+  useEffect(() => {
     return () => {
       if (typingTimeout.current) clearTimeout(typingTimeout.current);
-      ws.close();
+      socketRef.current?.close();
     };
-  }, []); // Empty deps → run once
+  }, []);
 
+  /* ------------------------------ teardown ------------------------------ */
+  // EchoVault is fail-closed (protocol §7.3/§7.4): on ANY fault — bad
+  // signature, wrong counter, tampered ciphertext, unexpected frame — we
+  // abandon the whole encrypted channel and require a fresh Verify+handshake.
+  // We never try to "keep going" on a connection we no longer trust.
+  const teardown = (note: string) => {
+    socketRef.current?.close();
+    socketRef.current = null;
+    link.current.sender = null;
+    link.current.recipient = null;
+    link.current.sessionId = null;
+    link.current.tHello = null;
+    c2sSeq.current = 0;
+    lastS2C.current = -1;
+    setEncChannel(false);
+    setIsConnected(false);
+    setIsTyping(false);
+    setStatusNote(note);
+  };
 
-  /* ------------------------------------------------------------------------
-   * SENDING A MESSAGE
-   * Runs when the user clicks the send button or presses Enter.
-   * The optional "e" is the browser "event"; we use it to stop the page from
-   * doing its default form behavior (a full page reload), which we don't want.
-   * ---------------------------------------------------------------------- */
-  const handleSend = (e?: React.FormEvent) => {
-    e?.preventDefault(); // stop the page from reloading when the form submits
+  /* -------------------- server base URLs (HTTP + WS) -------------------- */
+// One env var, HTTP-flavored. For your mitmproxy setup:
+//   NEXT_PUBLIC_API_URL=https://echo.server.test
+const httpBase =
+  process.env.NEXT_PUBLIC_API_URL ??
+  (typeof window !== 'undefined' && window.location.protocol === 'https:'
+    ? `https://${window.location.host}`
+    : 'http://localhost:8000');
 
-    const text = inputValue.trim(); // the typed text, with extra spaces removed
-    if (!text) return;              // if it's empty, do nothing
+// The WS base is DERIVED: https→wss, http→ws. Same host, same TLS decision.
+const wsBase =
+  process.env.NEXT_PUBLIC_WS_URL ?? httpBase.replace(/^http/, 'ws');
 
-    // Read the current c2s seq, send with it, then increment for the next send.
+  /* ------------------- VERIFY BUTTON: the §4.1.1 pin gate ---------------- */
+  // What happens when you click Verify, in plain English:
+  //   1. Take the key YOU pasted (the pin) — that is the only thing we trust.
+  //   2. Fetch /pubkey from the server. Whatever comes back is UNTRUSTED
+  //      input; it exists only so we can compare it against the pin.
+  //   3. Compare the served signing key to the pin, byte for byte. Mismatch
+  //      → red light, stop. (A middleman swapping keys is caught right here.)
+  //   4. Check the signature over the served keys using the pinned key. This
+  //      proves the encryption key really belongs to the pinned identity.
+  //   5. Only then adopt the server's encryption key and light up GREEN.
+  // After the green light we immediately run the handshake to establish the
+  // encrypted channel (see establishChannel below).
+  const handleVerify = async () => {
+    try {
+      setStatusNote('');
+      if (!link.current.identity) {
+        setPinStatus('unchecked');
+        setStatusNote('No valid mnemonic — create one on the Key Vault page first.');
+        return;
+      }
+      const pinText = serverPinInput.trim();
+      if (!pinText) {
+        // No pin provisioned → refuse to handshake at all (fail closed, §4.1.1).
+        setPinStatus('unchecked');
+        setStatusNote('Paste the server public key (printed in the server console).');
+        return;
+      }
+      const pinnedEd = unb64u(pinText, 32);
+
+      const res = await fetch(`${httpBase}/pubkey`);
+      const pk = await res.json();
+      const wireEd = unb64u(pk.server_ed25519, 32);
+      const wireX = unb64u(pk.server_x25519, 32);
+      const sig = unb64u(pk.sig, 64);
+
+      // Step 3 — pin comparison FIRST. The wire never teaches us a new key.
+      if (!bytesEqual(wireEd, pinnedEd)) throw new Error('pin mismatch');
+
+      // Step 4 — signature over label ‖ encryption key ‖ signing key.
+      const tPubkey = concatBytes(LABEL_PUBKEY, wireX, wireEd);
+      if (!ed25519.verify(sig, tPubkey, pinnedEd)) throw new Error('bad sig');
+
+      // Step 5 — adopt the encryption key, bound to the pinned identity.
+      link.current.pinnedEd = pinnedEd;
+      link.current.pinnedX = wireX;
+      setPinStatus('valid');
+      setStatusNote('Server key verified against pin — establishing encrypted channel…');
+
+      await establishChannel();
+    } catch {
+      // One uniform failure path: red light, no channel, no detail an
+      // attacker could learn from.
+      link.current.pinnedEd = null;
+      link.current.pinnedX = null;
+      setPinStatus('invalid');
+      teardown('Server key verification failed — channel not established.');
+    }
+  };
+
+  /* --------------- THE HANDSHAKE: hello / server_hello ------------------ */
+  // Runs only after the green light. In plain English:
+  //   1. Create our outgoing encryption "pipe" aimed at the verified server
+  //      key; this mints a one-time key share ("enc") to send along.
+  //   2. Sign a transcript of everything that matters (our keys, our enc,
+  //      and the PINNED server keys) and send it as "hello".
+  //   3. Wait for "server_hello". Rebuild the transcript the server should
+  //      have signed — from OUR OWN values and the PIN, never from the wire —
+  //      and check the signature with the pinned key. If a middleman swapped
+  //      anything (even just our own key on its way to the server!), this
+  //      check fails and we abort BEFORE any message is ever sealed (§4.3.1).
+  //   4. Derive the session fingerprint and open our incoming pipe. Done:
+  //      the Encrypt toggle comes alive.
+  const establishChannel = async () => {
+    const id = link.current.identity!;
+    const pinnedX = link.current.pinnedX!;
+    const pinnedEd = link.current.pinnedEd!;
+
+    // Fresh counters for a fresh handshake (a new session restarts at 0).
+    c2sSeq.current = 0;
+    lastS2C.current = -1;
+
+    // Step 1 — outgoing pipe + one-time key share.
+    const serverPk = await suite.kem.importKey("raw", ab(pinnedX), true);
+    const sender = await suite.createSenderContext({
+      recipientPublicKey: serverPk,
+      info: ab(HPKE_INFO),
+    });
+    const enc = new Uint8Array(sender.enc);
+
+    // Step 2 — signed hello transcript (§4.2).
+    const tHello = concatBytes(LABEL_HELLO, id.xPub, id.edPub, enc, pinnedX, pinnedEd);
+    const helloSig = ed25519.sign(tHello, id.edSeed);
+
+    const ws = new WebSocket(`${wsBase}/ws`);
+    socketRef.current = ws;
+    link.current.sender = sender;
+    link.current.tHello = tHello;
+
+    ws.onopen = () => {
+      setIsConnected(true);
+      ws.send(JSON.stringify({
+        type: "hello",
+        browser_x25519: b64u(id.xPub),
+        browser_ed25519: b64u(id.edPub),
+        enc: b64u(enc),
+        sig: b64u(helloSig),
+      }));
+    };
+    ws.onerror = () => teardown('Connection error.');
+    ws.onclose = () => {
+      if (socketRef.current === ws) {
+        setIsConnected(false);
+        setEncChannel(false);
+      }
+    };
+    ws.onmessage = (event) => {
+      handleFrame(event.data as string).catch(() =>
+        teardown('Encrypted channel fault — torn down. Verify again to reconnect.'),
+      );
+    };
+  };
+
+  /* --------------- INCOMING FRAMES (handshake + sealed msgs) ------------- */
+  const handleFrame = async (raw: string) => {
+    const L = link.current;
+    const data = JSON.parse(raw);
+    if (typeof data !== 'object' || data === null) throw new Error('bad frame');
+
+    // The server's uniform rejection — it already tore the link down.
+    if (data.type === 'error') throw new Error('server rejected');
+
+    // -------- waiting for server_hello (strict state machine, §5.6) --------
+    if (L.recipient === null) {
+      if (data.type !== 'server_hello') throw new Error('wrong frame for phase');
+      const encS2c = unb64u(data.enc, 32);
+      const sig = unb64u(data.sig, 64);
+
+      // Step 3 of the handshake (see establishChannel comment): rebuild the
+      // transcript from our own material + the pin, verify with the pin.
+      const tServerHello = concatBytes(
+        LABEL_SERVER_HELLO, encS2c, L.identity!.xPub, L.identity!.edPub,
+        L.pinnedX!, L.pinnedEd!,
+      );
+      if (!ed25519.verify(sig, tServerHello, L.pinnedEd!))
+        throw new Error('server_hello rejected');
+
+      // Step 4 — session fingerprint + incoming pipe. Channel is live.
+      L.sessionId = sha256(concatBytes(L.tHello!, tServerHello)).slice(0, 16);
+      const myPriv = await suite.kem.importKey("raw", ab(L.identity!.xScalar), false);
+      L.recipient = await suite.createRecipientContext({
+        recipientKey: myPriv,
+        enc: ab(encS2c),
+        info: ab(HPKE_INFO),
+      });
+      setEncChannel(true);
+      setStatusNote('Encrypted channel established.');
+      return;
+    }
+
+    // ----------------------- established: sealed msg -----------------------
+    if (data.type !== 'msg') throw new Error('wrong frame for phase');
+
+    setIsTyping(false);
+
+    if (typeof data.ct === 'string') {
+      // ENCRYPTED echo. The counter must be EXACTLY the next one (16-char
+      // lowercase hex). Anything else — repeat, gap, garbage — is a fault.
+      if (typeof data.seq !== 'string' || !/^[0-9a-f]{16}$/.test(data.seq))
+        throw new Error('malformed seq');
+      const seq = parseInt(data.seq, 16);
+      if (seq !== lastS2C.current + 1) throw new Error('seq gate');
+
+      // Rebuild the authentication label from what WE know and open the
+      // ciphertext. Wrong session, direction, type, counter, or a single
+      // flipped bit → open() throws → teardown (caught by the caller).
+      const ct = unb64u(data.ct, -1);
+      if (ct.length < 16) throw new Error('bad ct');
+      const aad = buildAad(L.sessionId!, DIR_S2C, seq);
+      const pt = await L.recipient.open(ab(ct), ab(aad));
+      lastS2C.current = seq;
+
+      const incoming: ChatMessage = {
+        seq,
+        text: new TextDecoder().decode(pt),
+        type: 'msg',
+        sender: 'assistant',
+        timestamp: new Date().toLocaleTimeString(),
+      };
+      setMessages((prev) => [...prev, incoming]);
+      return;
+    }
+
+    // PLAINTEXT frame (legacy / E2E-OFF comparison mode). Keep the original
+    // high-water-mark rule: accept only strictly newer seq numbers.
+    if (data.seq == null) return;
+    if (data.seq <= lastS2C.current) return;
+    lastS2C.current = data.seq;
+    const incoming: ChatMessage = {
+      seq: data.seq,
+      text: data.text ?? '',
+      type: data.type != null ? data.type : 'msg',
+      sender: 'assistant',
+      timestamp: data.timestamp ?? new Date().toLocaleTimeString(),
+    };
+    setMessages((prev) => [...prev, incoming]);
+  };
+
+  /* ------------------------------ SENDING -------------------------------- */
+  const handleSend = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+
+    const text = inputValue.trim();
+    if (!text) return;
+
+    const ws = socketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setStatusNote('Not connected — verify the server key first.');
+      return;
+    }
+
     const currentSeq = c2sSeq.current;
 
-    // Package up everything about this outgoing message.
-    const payload: ChatMessage = {
+    // What we show in OUR OWN transcript (always the plaintext — it's our
+    // message; encryption only changes what goes over the wire).
+    const localEcho: ChatMessage = {
       seq: currentSeq,
       text,
       type: 'msg',
       sender: 'user',
-      timestamp: new Date().toLocaleTimeString(), // the current time as text
+      timestamp: new Date().toLocaleTimeString(),
     };
 
-    // Only send if the phone line is actually open and ready.
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      // Convert our object to JSON text and send it down the wire.
-      socketRef.current.send(JSON.stringify(payload));
-
-      // Optimistically render our own message immediately.
-      // ("Optimistically" = show it right away without waiting for the server
-      //  to confirm, so the chat feels instant.)
-      setMessages((prev) => [...prev, payload]);
-      setInputValue(''); // clear the typing box
-
-      // Increment the c2s counter only after a successful send.
-      c2sSeq.current += 1;
-
-      // Show a typing indicator while we wait for a reply. Clear it on the
-      // next inbound message, or fall back to a timeout so it never sticks.
-      // (The timeout auto-hides "typing…" after 12 seconds if no reply comes,
-      //  so it can't get stuck on screen forever.)
-      setIsTyping(true);
-      if (typingTimeout.current) clearTimeout(typingTimeout.current);
-      typingTimeout.current = setTimeout(() => setIsTyping(false), 12000);
-
-      // Reset the auto-grown textarea back to one line.
-      if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    } else {
-      // The line wasn't open, so we couldn't send. Note it in the dev console.
-      console.error('WebSocket is not open. Cannot send message.');
+    try {
+      if (encrypt && channelEstablished && link.current.sender && link.current.sessionId) {
+        // ENCRYPTED path: build the authentication label for "browser→server,
+        // message, counter N", seal the text, and put ONLY {type, seq, ct} on
+        // the wire. A proxy that terminates TLS sees ciphertext, not words.
+        const aad = buildAad(link.current.sessionId, DIR_C2S, currentSeq);
+        const ct = new Uint8Array(
+          await link.current.sender.seal(ab(te.encode(text)), ab(aad)),
+        );
+        ws.send(JSON.stringify({
+          type: 'msg',
+          seq: currentSeq.toString(16).padStart(16, '0'),
+          ct: b64u(ct),
+        }));
+      } else {
+        // PLAINTEXT path (E2E OFF) — the TLS-only comparison mode from the
+        // threat model. NOTE: the strict EchoVault server rejects plaintext
+        // frames; use this mode only against the plaintext demo server.
+        ws.send(JSON.stringify(localEcho));
+      }
+    } catch {
+      teardown('Failed to seal message — channel torn down.');
+      return;
     }
+
+    // Optimistically render our own message immediately.
+    setMessages((prev) => [...prev, localEcho]);
+    setInputValue('');
+
+    // Advance the counter only AFTER a successful seal+send, so it stays in
+    // lock-step with the encryption pipe's internal counter.
+    c2sSeq.current += 1;
+
+    setIsTyping(true);
+    if (typingTimeout.current) clearTimeout(typingTimeout.current);
+    typingTimeout.current = setTimeout(() => setIsTyping(false), 12000);
+
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
   };
 
-
-  /* ------------------------------------------------------------------------
-   * KEYBOARD SHORTCUTS IN THE TYPING BOX
-   * Enter sends, Shift+Enter inserts a newline (ChatGPT-style).
-   * ---------------------------------------------------------------------- */
+  /* --------------------- keyboard + auto-grow (unchanged) ---------------- */
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // If the user pressed Enter WITHOUT holding Shift...
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault(); // ...don't type a newline...
-      handleSend();       // ...send the message instead.
+      e.preventDefault();
+      handleSend();
     }
-    // (If Shift IS held, we do nothing special, so a normal newline is typed.)
   };
 
-
-  /* ------------------------------------------------------------------------
-   * AUTO-GROWING TYPING BOX
-   * Runs every time the text in the box changes. It saves the new text, then
-   * grows the box's height to fit what was typed — up to a maximum of 160px,
-   * after which it stops growing and starts scrolling instead.
-   * ---------------------------------------------------------------------- */
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInputValue(e.target.value);      // remember the new text
-    const el = e.target;                // the textarea element itself
-    el.style.height = 'auto';           // shrink first so we can measure cleanly
-    // scrollHeight = how tall the text actually needs to be. Math.min caps it
-    // at 160 pixels so the box never gets ridiculously tall.
+    setInputValue(e.target.value);
+    const el = e.target;
+    el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
   };
 
-
   /* ========================================================================
    * THE VISIBLE LAYOUT (HTML / JSX)
-   * ========================================================================
-   * Everything inside this `return (...)` is what actually shows on screen.
-   * It LOOKS like HTML, but it's "JSX" — HTML written inside JavaScript.
-   *
-   * Quick guide to the symbols you'll see:
-   *   <div>...</div>        a generic box/container
-   *   className="..."       attaches a CSS style name (plain HTML uses "class";
-   *                         React uses "className"). The styles live at the
-   *                         very bottom of this file.
-   *   { ... }               an "escape hatch" back into JavaScript — anything
-   *                         inside the curly braces is computed by JS, e.g.
-   *                         {msg.text} prints the message's text.
-   *   {condition && (...)}  "show this part ONLY IF the condition is true".
-   *   {list.map(...)}       "for each item in the list, draw this piece" — this
-   *                         is how we turn the messages array into rows on screen.
-   *   <svg>...</svg>        a small vector drawing (the logos/icons), described
-   *                         by math paths rather than a picture file.
    * ====================================================================== */
   return (
-    // Outermost wrapper for the whole screen.
     <div className="cg-app">
-      {/* This injects all our CSS (the big `styles` text at the bottom) into
-          the page so the class names above actually have a look. */}
-      <style>{styles}</style>
-
-      {/* The chat window card (the centered rounded panel). */}
       <div className="cg-window">
 
         {/* ---------- Header ---------- */}
-        {/* The top bar: logo, app name, and the Online/Connecting status. */}
         <header className="cg-header">
           <div className="cg-brand">
-            {/* The little logo box with a star icon drawn as an SVG. */}
             <div className="cg-logo">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
-                {/* This "path" is the star shape, described as a set of lines. */}
                 <path
                   d="M12 2l1.9 4.7L19 8l-4.1 1.3L13 14l-1.4-4.5L7 8l4.6-1.3L12 2z"
                   fill="#fff"
                 />
-                {/* Two small dots ("circle") beside the star. */}
                 <circle cx="18.5" cy="17.5" r="1.6" fill="#fff" />
                 <circle cx="6" cy="16" r="1.1" fill="#fff" />
               </svg>
             </div>
 
-            {/* The app's name and live connection status. */}
             <div className="cg-titles">
               <h1 className="cg-title">Borealis Assistant</h1>
-              {/* The status text. The class name switches between 'on' and
-                  'off' depending on isConnected, which changes its color.
-                  The text itself reads "Online" when connected, else "Connecting…". */}
               <span className={`cg-status ${isConnected ? 'on' : 'off'}`}>
-                <span className="cg-dot" /> {/* the little colored status dot */}
+                <span className="cg-dot" />
                 {isConnected ? 'Online' : 'Connecting…'}
               </span>
             </div>
           </div>
+          <div className="cg-header-actions">
+            {/* The Encrypt switch — only usable once the encrypted channel is
+                actually established (green light + handshake done). */}
+            <label className="cg-toggle" title="Toggle browser-side HPKE encryption">
+              <span>Encrypt</span>
+              <input
+                type="checkbox"
+                checked={encrypt && channelEstablished}
+                disabled={!channelEstablished}
+                onChange={(e) => setEncrypt(e.target.checked)}
+              />
+              <span className="cg-toggle-track"><span className="cg-toggle-thumb" /></span>
+              <span className="cg-toggle-state">{encrypt ? 'On' : 'Off'}</span>
+            </label>
+
+            <a className="cg-mnemonic-btn" href="/identity">Key Vault</a>
+          </div>
         </header>
 
+        {/* ---------- Key bar: identity + server-key verification ---------- */}
+        <div className="cg-keybar">
+          {/* Light 1: does the Identity page have a valid saved mnemonic? */}
+          <span className="cg-keychip">
+            <span className={`cg-light ${hasSavedMnemonic ? "green" : "red"}`} />
+            Mnemonic Saved
+          </span>
+
+          {/* Light 2: the /pubkey stoplight. Green ONLY after the served key
+              matched the pasted pin byte-for-byte AND its signature verified. */}
+          <span className="cg-keychip">
+            <span
+              className={`cg-light ${
+                pinStatus === 'valid' ? 'green' : pinStatus === 'invalid' ? 'red' : ''
+              }`}
+              style={pinStatus === 'unchecked' ? { background: '#999' } : undefined}
+            />
+            Server Key {pinStatus === 'valid' ? 'Verified' : pinStatus === 'invalid' ? 'REJECTED' : 'Unverified'}
+          </span>
+
+          {/* Light 3: is the end-to-end channel actually up? */}
+          <span className="cg-keychip">
+            <span className={`cg-light ${channelEstablished ? "green" : "red"}`} />
+            E2E Channel
+          </span>
+        </div>
+
+        {/* The pin box + Verify button. Paste the base64url Ed25519 key the
+            server printed at startup. This must reach you OUT-OF-BAND (read
+            it off the server console yourself) — never trust a key the
+            network handed you. */}
+        <div
+          className="cg-pinbar"
+          style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 16px' }}
+        >
+          <input
+            value={serverPinInput}  className="cg-input"
+            onChange={(e) => { setServerPinInput(e.target.value); setPinStatus('unchecked'); }}
+            placeholder="Paste server public key (Ed25519, base64url) from server console"
+            style={{ flex: 1, fontFamily: 'monospace', fontSize: 12, padding: '6px 10px' }}
+            spellCheck={false}
+          />
+          <button className="cg-mnemonic-btn"
+            type="button"
+            onClick={handleVerify}
+            disabled={!hasSavedMnemonic}
+            title={hasSavedMnemonic ? 'Verify against /pubkey and connect' : 'Save a mnemonic on the Key Vault page first'}
+          >
+            Verify
+          </button>
+        </div>
+        {statusNote && (
+          <p style={{ margin: '0 16px 8px', fontSize: 12, opacity: 0.8 }}>{statusNote}</p>
+        )}
+
         {/* ---------- Transcript ---------- */}
-        {/* The scrollable area in the middle that holds the conversation. */}
         <div className="cg-transcript">
 
-          {/* EMPTY STATE: shown only when there are NO messages yet AND the
-              assistant isn't typing — a friendly "How can I help?" welcome. */}
           {messages.length === 0 && !isTyping && (
             <div className="cg-empty">
               <div className="cg-empty-orb">
@@ -426,21 +698,13 @@ export default function ChatApp() {
             </div>
           )}
 
-          {/* THE MESSAGE LIST:
-              .map(...) walks through every message and draws one row for each.
-              "key" is a unique label React needs to track each row efficiently.
-              The row's class includes msg.sender ('user' or 'assistant'), which
-              the CSS uses to align user messages right and assistant left. */}
           {messages.map((msg) => (
             <div
               key={`${msg.seq}-${msg.sender}`}
               className={`cg-row ${msg.sender}`}
             >
-              {/* The avatar (little icon) next to the bubble. We show a star for
-                  the assistant and a person icon for the user. */}
               <div className={`cg-avatar ${msg.sender}`}>
                 {msg.sender === 'assistant' ? (
-                  // Assistant avatar = star icon
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="none">
                     <path
                       d="M12 2l1.9 4.7L19 8l-4.1 1.3L13 14l-1.4-4.5L7 8l4.6-1.3L12 2z"
@@ -448,7 +712,6 @@ export default function ChatApp() {
                     />
                   </svg>
                 ) : (
-                  // User avatar = a head-and-shoulders person icon
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="none">
                     <circle cx="12" cy="8" r="3.4" fill="#fff" />
                     <path
@@ -462,7 +725,6 @@ export default function ChatApp() {
                 )}
               </div>
 
-              {/* The speech bubble: the message text plus its timestamp. */}
               <div className="cg-bubble">
                 <div className="cg-text">{msg.text}</div>
                 <div className="cg-time">{msg.timestamp}</div>
@@ -470,8 +732,6 @@ export default function ChatApp() {
             </div>
           ))}
 
-          {/* TYPING INDICATOR: the animated "…" bubble, shown only while we're
-              waiting for the assistant to reply (isTyping is true). */}
           {isTyping && (
             <div className="cg-row assistant">
               <div className="cg-avatar assistant">
@@ -482,7 +742,6 @@ export default function ChatApp() {
                   />
                 </svg>
               </div>
-              {/* Three dots that bounce via CSS animation. */}
               <div className="cg-bubble cg-typing">
                 <span className="cg-typing-dot" />
                 <span className="cg-typing-dot" />
@@ -491,23 +750,12 @@ export default function ChatApp() {
             </div>
           )}
 
-          {/* Invisible marker at the bottom. The auto-scroll code earlier scrolls
-              the view down to THIS element whenever a new message arrives. */}
           <div ref={endRef} />
         </div>
 
         {/* ---------- Composer ---------- */}
-        {/* The bottom area where the user types and sends. It's a "form", so
-            pressing Enter / clicking the button triggers onSubmit = handleSend. */}
         <form className="cg-composer" onSubmit={handleSend}>
           <div className="cg-inputwrap">
-            {/* The text box.
-                  ref          → handle used to auto-resize it.
-                  rows={1}     → start one line tall.
-                  value        → always shows our remembered inputValue.
-                  onChange     → runs handleInput on every keystroke.
-                  onKeyDown    → runs handleKeyDown to catch the Enter key.
-                  placeholder  → the faint hint text shown when it's empty. */}
             <textarea
               ref={textareaRef}
               rows={1}
@@ -518,10 +766,6 @@ export default function ChatApp() {
               className="cg-input"
             />
 
-            {/* The send button (an upward arrow icon).
-                  type="submit" → submitting the form triggers handleSend.
-                  disabled      → greyed-out and unclickable when the box is empty.
-                  aria-label    → a description for screen readers (accessibility). */}
             <button
               type="submit"
               className="cg-send"
@@ -540,8 +784,6 @@ export default function ChatApp() {
             </button>
           </div>
 
-          {/* Small helper text under the box. <kbd> styles a key name like a
-              little keyboard cap. {' '} is just a deliberate single space. */}
           <p className="cg-footnote">
             Borealis can make mistakes. Press <kbd>Enter</kbd> to send ·{' '}
             <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line.
@@ -551,282 +793,3 @@ export default function ChatApp() {
     </div>
   );
 }
-
-
-/* ============================================================================
- * THE STYLES (CSS)
- * ============================================================================
- * Everything below is CSS — the rules that control how the screen LOOKS.
- * It's stored as one big block of text (a "template string", wrapped in
- * backticks ` `) and injected into the page by the <style> tag up in the layout.
- *
- * HOW CSS RULES WORK — each rule has two parts:
- *
- *     .cg-title {           ← the SELECTOR: which elements this rule targets.
- *        font-size: 15px;   ← a PROPERTY: value pair. "Make the font 15 pixels."
- *        font-weight: 600;  ← another one. "Make it semi-bold."
- *     }
- *
- *   - A name starting with "." (like .cg-title) matches every element whose
- *     className is "cg-title". That's how the HTML above connects to its look.
- *   - Common properties: color (text color), background (fill behind it),
- *     padding (space INSIDE a box), margin (space OUTSIDE a box),
- *     border-radius (rounded corners), display/flex (how items are arranged),
- *     box-shadow (a soft drop shadow).
- *   - Units: "px" = pixels (screen dots), "%" = percent of the parent's size,
- *     "vh"/"vw" = percent of the viewport's height/width.
- *
- * SPECIAL PIECES YOU'LL SEE BELOW:
- *   --accent: #10a37f;   "CSS variables" — reusable named values (here, colors).
- *                        Defined once at the top, reused everywhere via var(--accent).
- *                        Change it in one place and the whole app updates.
- *   #10a37f              a color in hex code (a teal-green). Format is #RRGGBB.
- *   rgba(0,0,0,.7)       a color with transparency: the last number (.7) is the
- *                        opacity, from 0 (invisible) to 1 (solid).
- *   @keyframes name {}   defines an ANIMATION (e.g. the pulsing dot, bouncing
- *                        typing dots). "animation: pulse 2s infinite" then plays it.
- *   :hover / :disabled   "states" — styles that apply only while hovering with
- *                        the mouse, or while a button is disabled.
- *   @media (max-width…)  "responsive" rules that only apply on small screens
- *                        (e.g. phones), so the layout adapts.
- * ========================================================================== */
-
-const styles = `
-  /* The full-screen background. The --xxx lines define reusable colors used
-     throughout the app. The "background" stacks two soft colored glows on top
-     of the dark base color (--bg) for that subtle gradient effect. */
-  .cg-app {
-    --accent: #10a37f;
-    --accent-2: #1aab8a;
-    --bg: #0d0d0f;
-    --panel: #1b1b1f;
-    --panel-2: #232328;
-    --bubble-bot: #2a2a31;
-    --text: #ececf1;
-    --muted: #9a9aa5;
-    min-height: 100vh;            /* at least the full height of the screen */
-    display: flex;                /* use flexible box layout... */
-    align-items: center;          /* ...centered vertically... */
-    justify-content: center;      /* ...and horizontally (so the card is centered) */
-    padding: 24px;
-    box-sizing: border-box;
-    font-family: 'Söhne', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
-      Roboto, Helvetica, Arial, sans-serif;  /* preferred fonts, in order */
-    color: var(--text);           /* default text color */
-    background:
-      radial-gradient(1200px 600px at 15% -10%, rgba(16,163,127,.18), transparent 60%),
-      radial-gradient(900px 500px at 110% 10%, rgba(99,102,241,.16), transparent 55%),
-      var(--bg);
-  }
-
-  /* The chat card itself: a tall rounded panel, centered, with a max width so
-     it doesn't stretch too wide on big monitors. */
-  .cg-window {
-    width: 100%;
-    max-width: 760px;             /* never wider than 760px */
-    height: min(86vh, 860px);     /* 86% of screen height, but at most 860px */
-    display: flex;
-    flex-direction: column;       /* stack children top-to-bottom: header, chat, composer */
-    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent), var(--panel);
-    border: 1px solid rgba(255,255,255,.08);
-    border-radius: 22px;          /* rounded corners */
-    box-shadow: 0 30px 80px -20px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.02) inset;
-    overflow: hidden;             /* clip anything poking outside the rounded corners */
-    backdrop-filter: blur(12px);  /* blur whatever is behind the card */
-  }
-
-  /* Header */
-  /* The top bar holding the logo, title, and status. */
-  .cg-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 18px;           /* 14px top/bottom, 18px left/right */
-    border-bottom: 1px solid rgba(255,255,255,.07);  /* thin divider line */
-    background: rgba(255,255,255,.015);
-  }
-  .cg-brand { display: flex; align-items: center; gap: 12px; } /* logo + titles in a row */
-  .cg-logo {
-    width: 38px; height: 38px; border-radius: 12px;
-    display: grid; place-items: center;  /* perfectly center the icon inside */
-    background: linear-gradient(135deg, var(--accent), #0e8e6f); /* green gradient */
-    box-shadow: 0 6px 18px -4px rgba(16,163,127,.6);            /* green glow */
-  }
-  .cg-titles { display: flex; flex-direction: column; line-height: 1.1; } /* title above status */
-  .cg-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .2px; }
-  .cg-status {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-size: 11.5px; color: var(--muted); margin-top: 3px;
-  }
-  .cg-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); } /* grey by default */
-  /* When connected (.on), the dot turns green and gently pulses. */
-  .cg-status.on .cg-dot {
-    background: #2ecc71;
-    box-shadow: 0 0 0 0 rgba(46,204,113,.6);
-    animation: pulse 2s infinite;   /* play the "pulse" animation forever */
-  }
-  /* Defines the pulsing-ring animation used by the status dot above. */
-  @keyframes pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(46,204,113,.55); }
-    70%  { box-shadow: 0 0 0 7px rgba(46,204,113,0); }
-    100% { box-shadow: 0 0 0 0 rgba(46,204,113,0); }
-  }
-
-  /* Transcript */
-  /* The scrollable conversation area. "flex: 1" makes it grow to fill all the
-     leftover space between the header and the composer. */
-  .cg-transcript {
-    flex: 1; overflow-y: auto; padding: 22px 18px 8px;   /* scroll vertically when full */
-    display: flex; flex-direction: column; gap: 16px;    /* messages stacked with spacing */
-    scroll-behavior: smooth;
-  }
-  /* These style the scrollbar itself (width, color, hover color). */
-  .cg-transcript::-webkit-scrollbar { width: 9px; }
-  .cg-transcript::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,.12); border-radius: 8px;
-  }
-  .cg-transcript::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.2); }
-
-  /* Empty state */
-  /* The centered "How can I help?" welcome shown before any messages. */
-  .cg-empty {
-    margin: auto; text-align: center; max-width: 340px;
-    animation: fadeUp .5s ease both;   /* fades up into view when it appears */
-  }
-  .cg-empty-orb {
-    width: 68px; height: 68px; margin: 0 auto 18px; border-radius: 20px;
-    display: grid; place-items: center;
-    background: linear-gradient(135deg, var(--accent), #5b6cf0);
-    box-shadow: 0 18px 40px -12px rgba(16,163,127,.55);
-    animation: float 4s ease-in-out infinite;  /* gently bobs up and down */
-  }
-  .cg-empty-title { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
-  .cg-empty-sub { margin: 0; color: var(--muted); font-size: 14px; }
-  /* The gentle up-and-down bob for the orb above. */
-  @keyframes float {
-    0%,100% { transform: translateY(0); }
-    50%     { transform: translateY(-7px); }
-  }
-
-  /* Rows + bubbles */
-  /* One row = an avatar + a speech bubble. They animate in when added. */
-  .cg-row { display: flex; gap: 11px; align-items: flex-end; animation: msgIn .32s ease both; }
-  /* User rows are reversed so the bubble sits on the RIGHT, avatar on the right. */
-  .cg-row.user { flex-direction: row-reverse; }
-  .cg-avatar {
-    flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px;
-    display: grid; place-items: center; margin-bottom: 2px;
-  }
-  /* Assistant avatar = green gradient; user avatar = purple gradient. */
-  .cg-avatar.assistant { background: linear-gradient(135deg, var(--accent), #0e8e6f); }
-  .cg-avatar.user { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
-
-  /* The speech bubble shared look (size limit, padding, rounded, wrapping). */
-  .cg-bubble {
-    max-width: 76%;                 /* bubble never wider than 76% of the row */
-    padding: 11px 14px;
-    border-radius: 18px;
-    font-size: 14.5px; line-height: 1.55;
-    word-wrap: break-word; white-space: pre-wrap;  /* keep line breaks, wrap long words */
-    box-shadow: 0 2px 10px -4px rgba(0,0,0,.5);
-  }
-  /* Assistant bubbles: grey, with one corner squared off for a "tail" look. */
-  .cg-row.assistant .cg-bubble {
-    background: var(--bubble-bot);
-    border: 1px solid rgba(255,255,255,.05);
-    border-bottom-left-radius: 6px;
-  }
-  /* User bubbles: green gradient, white text, squared bottom-right corner. */
-  .cg-row.user .cg-bubble {
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: #fff;
-    border-bottom-right-radius: 6px;
-  }
-  .cg-text {}   /* (no special styling needed for the text itself) */
-  /* The faint little timestamp under each message. */
-  .cg-time {
-    margin-top: 5px; font-size: 10.5px; opacity: .6;
-    text-align: right;
-  }
-  .cg-row.assistant .cg-time { text-align: left; } /* assistant times align left */
-
-  /* Typing indicator */
-  /* The three bouncing dots shown while waiting for a reply. */
-  .cg-typing { display: flex; gap: 5px; align-items: center; padding: 14px 16px; }
-  .cg-typing-dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--muted); animation: blink 1.4s infinite both;
-  }
-  /* Stagger the 2nd and 3rd dots so they bounce in sequence, not together. */
-  .cg-typing-dot:nth-child(2) { animation-delay: .2s; }
-  .cg-typing-dot:nth-child(3) { animation-delay: .4s; }
-  /* The bounce + fade used by the dots above. */
-  @keyframes blink {
-    0%, 80%, 100% { opacity: .25; transform: translateY(0); }
-    40%           { opacity: 1;  transform: translateY(-3px); }
-  }
-
-  /* Composer */
-  /* The bottom typing area. */
-  .cg-composer { padding: 12px 16px 16px; }
-  /* The rounded "pill" that holds the text box and send button side by side. */
-  .cg-inputwrap {
-    display: flex; align-items: flex-end; gap: 8px;
-    background: var(--panel-2);
-    border: 1px solid rgba(255,255,255,.09);
-    border-radius: 22px;
-    padding: 8px 8px 8px 16px;
-    transition: border-color .18s, box-shadow .18s;  /* smooth color change on focus */
-  }
-  /* When the user clicks into the box, highlight the pill with a green ring. */
-  .cg-inputwrap:focus-within {
-    border-color: rgba(16,163,127,.65);
-    box-shadow: 0 0 0 3px rgba(16,163,127,.16);
-  }
-  /* The text box: transparent, borderless, grows up to 160px tall. */
-  .cg-input {
-    flex: 1; resize: none; border: none; outline: none; background: transparent;
-    color: var(--text); font: inherit; font-size: 14.5px; line-height: 1.5;
-    max-height: 160px; padding: 6px 0;
-  }
-  .cg-input::placeholder { color: var(--muted); }  /* faint hint-text color */
-
-  /* The round send button with the arrow icon. */
-  .cg-send {
-    flex: 0 0 auto; width: 36px; height: 36px; border: none; border-radius: 50%;
-    display: grid; place-items: center; cursor: pointer; color: #fff;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    transition: transform .15s, box-shadow .15s, opacity .15s;  /* smooth hover/click effects */
-    box-shadow: 0 6px 16px -4px rgba(16,163,127,.7);
-  }
-  /* Grow slightly on hover, shrink on click — but only when NOT disabled. */
-  .cg-send:hover:not(:disabled) { transform: scale(1.08) translateY(-1px); }
-  .cg-send:active:not(:disabled) { transform: scale(.94); }
-  /* When the box is empty the button is disabled: faded and grey. */
-  .cg-send:disabled {
-    opacity: .4; cursor: not-allowed; box-shadow: none;
-    background: #3a3a42;
-  }
-
-  /* The small helper line beneath the box. */
-  .cg-footnote {
-    margin: 10px 4px 0; text-align: center; font-size: 11px; color: var(--muted);
-  }
-  /* Styles the <kbd> tags so key names (Enter, Shift) look like keyboard caps. */
-  .cg-footnote kbd {
-    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12);
-    border-radius: 5px; padding: 1px 5px; font-size: 10px; font-family: inherit;
-  }
-
-  /* Two animations: messages slide up as they appear; the empty state fades up. */
-  @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-  @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-
-  /* RESPONSIVE: on narrow screens (phones, 640px wide or less), make the chat
-     fill the whole screen edge-to-edge with no rounded corners or margins. */
-  @media (max-width: 640px) {
-    .cg-app { padding: 0; }
-    .cg-window { height: 100vh; max-width: 100%; border-radius: 0; border: none; }
-    .cg-bubble { max-width: 82%; }
-  }
-`;

@@ -1,0 +1,4 @@
+NAMES         STATUS         PORTS
+mitmproxy     Up 2 minutes   0.0.0.0:8081->8081/tcp, [::]:8081->8081/tcp, 0.0.0.0:443->8080/tcp, [::]:443->8080/tcp
+echo_client   Up 2 minutes   3000/tcp
+echo_server   Up 3 minutes   8000/tcp

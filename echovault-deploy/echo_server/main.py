@@ -25,7 +25,7 @@ from hpke_server import (
 load_dotenv()
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["https://echo.client.test"], allow_methods=["GET"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"])
 SERVER_KEYS: ServerKeys = load_server_keys()
 
 

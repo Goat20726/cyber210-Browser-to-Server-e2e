@@ -90,6 +90,7 @@ function unb64u(s: string, expectedLen: number): Uint8Array {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   if (expectedLen >= 0 && out.length !== expectedLen)
     throw new Error("bad length");
+  if (b64u(out) !== s) throw new Error("bad encoding");  //Base64URL non-canonical encoding
   return out;
 }
 

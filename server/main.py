@@ -13,9 +13,9 @@ Endpoints:
 import json
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware
 
 from hpke_server import (
     ServerKeys, ServerSession, ProtocolError,
@@ -25,7 +25,7 @@ from hpke_server import (
 load_dotenv()
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["https://echo.client.test"], allow_methods=["GET"])  # demo only
 SERVER_KEYS: ServerKeys = load_server_keys()
 
 

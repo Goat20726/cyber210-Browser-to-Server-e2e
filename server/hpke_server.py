@@ -276,11 +276,23 @@ class ServerSession:
         if self.phase != "ESTABLISHED":
             raise ProtocolError(f"msg received in wrong phase: {self.phase}")
 
+        # Issue 1 fix: validate seq format before parsing
+        seq_hex = frame.get("seq", "")
+        if not isinstance(seq_hex, str) or len(seq_hex) != 16:
+            raise ProtocolError("invalid seq: must be 16-char hex string")
         try:
-            seq = hex_to_seq(frame["seq"])
-            ct  = b64url_decode(frame["ct"])
-        except Exception as e:
-            raise ProtocolError(f"malformed msg frame: {e}") from e
+            seq = hex_to_seq(seq_hex)
+        except ValueError:
+            raise ProtocolError("invalid seq: non-hex characters")
+
+        # Issue 2 fix: validate ct field before decoding
+        ct_b64 = frame.get("ct", "")
+        if not isinstance(ct_b64, str) or len(ct_b64) == 0:
+            raise ProtocolError("invalid ct: missing or empty")
+        try:
+            ct = b64url_decode(ct_b64)
+        except Exception:
+            raise ProtocolError("invalid ct: malformed base64url encoding")e
 
         # seq gate (D019): reject duplicate/rollback/gap
         if seq != self._expected_c2s:

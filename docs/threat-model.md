@@ -2,9 +2,9 @@
 
 ## Why This Matters
 
-TLS protects data between TLS endpoints. The problem is that in many real deployments, TLS does not terminate directly inside the application process that is meant to read the data. It often terminates first at a reverse proxy, load balancer, CDN edge node, WAF, or API gateway.
+TLS protects data between TLS endpoints. The problem is that in many real deployments, TLS does not terminate directly inside the application process that is meant to read the data. It often terminates first at a reverse proxy, load balancer, CDN edge node, WAF, or API gateway. Any component that terminates TLS or receives decrypted HTTP/WebSocket traffic can read prompt contents in a TLS-only design.
 
-Any component that terminates TLS or receives decrypted HTTP/WebSocket traffic can read prompt contents in a TLS-only design. That matters for LLM prompt traffic because prompts may contain sensitive user text, credentials, internal business details, personal information, or other data that should not be broadly visible to infrastructure components.
+That matters for LLM prompt traffic because prompts may contain sensitive user text, credentials, internal business details, personal information, or other data that should not be broadly visible to infrastructure components.
 
 HPKE inside TLS moves the plaintext boundary from the first TLS termination point to the intended application process holding the recipient private key. That is the core thesis of this demo.
 
@@ -17,20 +17,16 @@ This does not protect against the intended server reading the prompt. It also do
 The demo compares two modes:
 
 1. **TLS-only mode:** prompt-like WebSocket traffic is protected by TLS in transit, but becomes visible wherever TLS terminates.
-2. **TLS + HPKE mode:** prompt-like WebSocket traffic is encrypted in the browser before being sent through the WebSocket. TLS still protects the transport, but HPKE adds an application-layer encryption boundary.
+2. **TLS + HPKE mode:** prompt-like WebSocket traffic is encrypted in the browser before being sent through the WebSocket.
 
-In this project, “end-to-end” means **browser to intended echo server process**. The echo server is the intended recipient and decrypts the prompt by design.
+TLS still protects the transport, but HPKE adds an application-layer encryption boundary.
 
-This is not end-to-end encryption in the messaging-app sense where only two human users can read the content. The server is trusted to decrypt and echo the message.
+In this project, “end-to-end” means **browser to intended echo server process**. The echo server is the intended recipient and decrypts the prompt by design. This is not end-to-end encryption in the messaging-app sense where only two human users can read the content. The server is trusted to decrypt and echo the message.
 
-**The claim is narrow:**
+**The claim is narrow:** HPKE inside TLS reduces plaintext exposure at TLS-terminating intermediaries that are not the intended reader of the prompt.
 
-HPKE inside TLS reduces plaintext exposure at TLS-terminating intermediaries that are not the intended reader of the prompt.
+**The claim is not:** This system does not hide the prompt from the echo server, a compromised browser, compromised frontend JavaScript, a stolen server private key, server-side logs after decryption, or anyone with privileged access to the server process or host.
 
-**The claim is not:**
-
-This system does not hide the prompt from the echo server, a compromised browser, compromised frontend JavaScript, a stolen server private key, server-side logs after decryption, or anyone with privileged access to the server process or host.
- 
 ---
 
 ## Assumptions
@@ -69,18 +65,20 @@ No real credentials, real PII, API keys, access tokens, or private project data 
 
 ## Architecture Summary
 
-| Layer | Component                    | Role                                                                     |
-| ----- | ---------------------------- | ------------------------------------------------------------------------ |
-| L1    | TLS 1.3 over `wss://`        | Outer transport tunnel; may terminate at a proxy                         |
-| L2    | Demo identity material       | BIP-39 mnemonic used for repeatable demo identity and testing            |
-| L3    | Demo key-pinning handshake   | Pins expected server identity; binds key material to a signed transcript |
-| L4    | HPKE seal/open               | RFC 9180 HPKE using X25519, HKDF-SHA-256, and ChaCha20-Poly1305          |
+| Layer | Component                    | Role                                                                                                                                                                               |
+| ----- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| L1    | TLS 1.3 over `wss://`        | Outer transport tunnel; may terminate at a proxy                                                                                                                                   |
+| L2    | Demo identity material       | BIP-39 mnemonic used for repeatable demo identity and testing                                                                                                                      |
+| L3    | Demo key-pinning handshake   | Pins expected server identity; binds key material to a signed transcript                                                                                                           |
+| L4    | HPKE seal/open               | RFC 9180 HPKE using X25519, HKDF-SHA-256, and ChaCha20-Poly1305                                                                                                                    |
 | L5    | Session and integrity checks | Sequence number, session id, **and frame type** bound in AAD; replay/reorder **enforced** — mandatory per-link `seq` tracking with teardown-and-rehandshake (protocol §7.3 / D019) |
-| L6    | Chat UI                      | Next.js/React interface with E2E ON/OFF toggle for comparison            |
+| L6    | Chat UI                      | Next.js/React interface with E2E ON/OFF toggle for comparison                                                                                                                      |
 
 The main trust boundary is the echo server application process holding the HPKE private key `skB`.
 
-When E2E is ON, network observers and TLS-terminating intermediaries should see only encrypted HPKE payloads. Handshake frames expose key material (`enc`) and a signature (`sig`); steady-state message frames expose only `{ seq, ct }` (prompt plaintext never appears). (`enc` is carried once per direction in the handshake, not in every message — protocol.md §5.)
+When E2E is ON, network observers and TLS-terminating intermediaries should see only encrypted HPKE payloads. Handshake frames expose key material (`enc`) and a signature (`sig`); steady-state message frames expose only `{ seq, ct }` (prompt plaintext never appears).
+
+(`enc` is carried once per direction in the handshake, not in every message — protocol.md §5.)
 
 Plaintext still exists inside the intended echo server process after HPKE decryption and may be exposed through server memory, debug output, application logs, crash dumps, or privileged host access.
 
@@ -143,17 +141,18 @@ The project is about what happens at and after TLS termination, where prompt con
 
 ## Threat Actors
 
-| Actor                                   | Capability                                                                | Position              |
-| --------------------------------------- | ------------------------------------------------------------------------- | --------------------- |
-| Passive network observer                | Captures packets but cannot break TLS                                     | Outside TLS tunnel    |
-| mitmproxy with trusted CA               | Decrypts TLS and reads WebSocket frames                                   | TLS termination point |
-| Reverse proxy / gateway / load balancer | Terminates or forwards decrypted application traffic                      | Infrastructure layer  |
-| CDN / WAF / cloud inspection component  | May inspect decrypted traffic depending on deployment                     | Infrastructure layer  |
-| Key-substitution attacker               | Attempts to replace the server public key with an attacker-controlled key | Key delivery path     |
-| Tampering attacker                      | Modifies HPKE ciphertext in transit                                       | Network or proxy      |
-| Replay / reorder attacker               | Re-sends or reorders valid sealed messages                                | Network or proxy      |
-| Reflection attacker                     | Replays ciphertext from one direction or session into another context     | Network or proxy      |
-| Denial-of-service attacker              | Floods server or sends malformed ciphertext                               | Network               |
+| Actor                                       | Capability                                                                                             | Position              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------- |
+| Passive network observer                    | Captures packets but cannot break TLS                                                                  | Outside TLS tunnel    |
+| mitmproxy with trusted CA                   | Decrypts TLS and reads WebSocket frames                                                                | TLS termination point |
+| Reverse proxy / gateway / load balancer     | Terminates or forwards decrypted application traffic                                                   | Infrastructure layer  |
+| CDN / WAF / cloud inspection component      | May inspect decrypted traffic depending on deployment                                                  | Infrastructure layer  |
+| Compromised frontend/code-delivery attacker | Modifies browser-side JavaScript to access plaintext before encryption or alter cryptographic behavior | Code-delivery path    |
+| Key-substitution attacker                   | Attempts to replace the server public key with an attacker-controlled key                              | Key delivery path     |
+| Tampering attacker                          | Modifies HPKE ciphertext in transit                                                                    | Network or proxy      |
+| Replay / reorder attacker                   | Re-sends or reorders valid sealed messages                                                             | Network or proxy      |
+| Reflection attacker                         | Replays ciphertext from one direction or session into another context                                  | Network or proxy      |
+| Denial-of-service attacker                  | Floods server or sends malformed ciphertext                                                            | Network               |
 
 ---
 
@@ -172,15 +171,16 @@ The project is about what happens at and after TLS termination, where prompt con
 
 ### Integrity
 
-| Threat                                 | Expected Result                                                        | Mitigation                                       |
-| -------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------ |
-| Ciphertext tampering                   | Message should fail authentication and be rejected                     | ChaCha20-Poly1305 AEAD authentication            |
-| Key substitution — **server key (c2s)** | Browser detects an unexpected server identity key via the pinned Ed25519 identity and aborts | Pinned Ed25519 handshake + mandatory `/pubkey` pin-comparison gate (protocol §4.1.1 / D016) |
-| Key substitution — **browser key (s2c reply)** | Browser detects an unexpected `browser_x25519` in the reply path (an active proxy trying to redirect the echo, which carries the prompt back) via the `server_hello` self-key check, and aborts **before sealing any prompt** | Mandatory `server_hello` acceptance gate: verify sig against pin **and** assert own browser/server keys echoed byte-for-byte (protocol §4.3.1 / D015) |
-| Replay or reordering                   | **Rejected (enforced).** A duplicate/rollback/gap fails the `seq` gate; the link is torn down and a fresh handshake is required | Monotonic sequence numbers bound into AAD + **mandatory** receiver `seq` tracking with teardown-and-rehandshake (protocol §7.3 / D019) |
-| Reflection across direction or session | Reflected message should fail authentication                           | Direction bound into AAD; **session bound via `SESSION_ID` (SHA-256 of the handshake transcripts) in AAD** (protocol §3.0). Cross-direction reflection fails on the direction token; cross-session reflection fails because the session's derived key differs *and* `SESSION_ID` differs. |
-| Frame-type confusion (e.g. `msg` relabeled as `hello`) | Reinterpretation rejected | 1-byte `TYPE` bound into AAD + strict receiver state machine that only accepts the frame type valid for the current phase (protocol §3.0.1 / §5.6 / D020) |
-| Malformed ciphertext                   | Server should reject without leaking plaintext or sensitive errors     | Strict, uniform fail-closed decrypt handling — no plaintext, no distinguishing error oracle (protocol §7.4 / D018) |
+| Threat                                                 | Expected Result                                                                                                                                                                                                               | Mitigation                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ciphertext tampering                                   | Message should fail authentication and be rejected                                                                                                                                                                            | ChaCha20-Poly1305 AEAD authentication                                                                                                                                                                                                                                                     |
+| Key substitution — **server key (c2s)**                | Browser detects an unexpected server identity key via the pinned Ed25519 identity and aborts                                                                                                                                  | Pinned Ed25519 handshake + mandatory `/pubkey` pin-comparison gate (protocol §4.1.1 / D016)                                                                                                                                                                                               |
+| Key substitution — **browser key (s2c reply)**         | Browser detects an unexpected `browser_x25519` in the reply path (an active proxy trying to redirect the echo, which carries the prompt back) via the `server_hello` self-key check, and aborts **before sealing any prompt** | Mandatory `server_hello` acceptance gate: verify sig against pin **and** assert own browser/server keys echoed byte-for-byte (protocol §4.3.1 / D015)                                                                                                                                     |
+| Replay or reordering                                   | **Rejected (enforced).** A duplicate/rollback/gap fails the `seq` gate; the link is torn down and a fresh handshake is required                                                                                               | Monotonic sequence numbers bound into AAD + **mandatory** receiver `seq` tracking with teardown-and-rehandshake (protocol §7.3 / D019)                                                                                                                                                    |
+| Reflection across direction or session                 | Reflected message should fail authentication                                                                                                                                                                                  | Direction bound into AAD; **session bound via `SESSION_ID` (SHA-256 of the handshake transcripts) in AAD** (protocol §3.0). Cross-direction reflection fails on the direction token; cross-session reflection fails because the session's derived key differs *and* `SESSION_ID` differs. |
+| Frame-type confusion (e.g. `msg` relabeled as `hello`) | Reinterpretation rejected                                                                                                                                                                                                     | 1-byte `TYPE` bound into AAD + strict receiver state machine that only accepts the frame type valid for the current phase (protocol §3.0.1 / §5.6 / D020)                                                                                                                                 |
+| Malformed ciphertext                                   | Malformed input should be rejected without exposing plaintext or sensitive internal details; testing confirmed fail-closed rejection but identified internal exception detail in some error paths                             | Strict, uniform fail-closed handling with sanitized errors that do not expose plaintext or internal implementation details (protocol §7.4 / D018)                                                                                                                                         |
+
 ### Availability
 
 | Threat                            | Expected Result                                   | Mitigation                        |
@@ -201,41 +201,31 @@ This only helps if the browser already has the expected server identity key thro
 
 If the pin itself is delivered by compromised frontend JavaScript, the attacker can replace both the key and the check. For that reason, key pinning is treated as a demo trust assumption, not a complete production key-management solution.
 
-**Both directions are defended (protocol §4.1.1 / §4.3.1 / D015–D016).** Key substitution
-is not limited to the server key. Because the browser→server (c2s) prompt is sealed with
-the browser's *ephemeral* `enc`, it does not depend on the browser's static key — but the
-server→browser (s2c) *echo reply, which carries the prompt back*, is sealed to the
-browser's static `browser_x25519`, and the server holds no pin for the browser. An active
-proxy could rewrite the `hello` (keep the real `enc`, swap in its own `browser_x25519`,
-re-sign with its own Ed25519); the real pinned server would then validly sign a
-`server_hello` containing the attacker's key, so a signature-only check would pass and the
-reply would be sealed to the proxy. This is closed by two mandatory checks: (1) the browser
-confirms the `/pubkey` server key against the out-of-band pin and never learns it from the
-wire (§4.1.1); (2) the browser confirms `server_hello` echoes **its own** browser keys and
-the **pinned** server keys, byte-for-byte, and aborts before sealing any prompt (§4.3.1).
-Both still rest on the server Ed25519 identity being a genuine out-of-band pin; pin-on-
-first-use voids them.
----
+Red-team testing also identified a pin-canonicalization weakness in which a non-canonical representation was accepted, indicating that identity comparisons should enforce a single canonical encoding.
 
+**Both directions are defended (protocol §4.1.1 / §4.3.1 / D015–D016).** Key substitution is not limited to the server key. Because the browser→server (c2s) prompt is sealed with the browser's *ephemeral* `enc`, it does not depend on the browser's static key — but the server→browser (s2c) *echo reply, which carries the prompt back*, is sealed to the browser's static `browser_x25519`, and the server holds no pin for the browser.
+
+An active proxy could rewrite the `hello` (keep the real `enc`, swap in its own `browser_x25519`, re-sign with its own Ed25519); the real pinned server would then validly sign a `server_hello` containing the attacker's key, so a signature-only check would pass and the reply would be sealed to the proxy.
+
+This is closed by two mandatory checks: (1) the browser confirms the `/pubkey` server key against the out-of-band pin and never learns it from the wire (§4.1.1); (2) the browser confirms `server_hello` echoes **its own** browser keys and the **pinned** server keys, byte-for-byte, and aborts before sealing any prompt (§4.3.1).
+
+Both still rest on the server Ed25519 identity being a genuine out-of-band pin; pin-on-first-use voids them.
+
+---
 
 ## Replay and Sequence Number Limits
 
 Sequence numbers can help detect replayed or reordered messages when they are bound into HPKE associated data and checked by the receiver.
 
-Replay protection is **enforced, not optional** (protocol §7.3 / D019). The receiver MUST
-track the expected next `seq` per direction and reject any duplicate, rollback, or gap
-*before* calling `open()`. Under the chosen **teardown-and-rehandshake** policy, any such
-ordering fault — or any authentication failure (bad tag / AAD mismatch) — aborts the link
-and forces a fresh handshake; the receiver never skips a `seq` or resyncs a suspect
-context. (The stateful HPKE context also fails closed on an already-consumed frame, but
-that is a side effect that desynchronizes the stream, not the primary check.)
+Replay protection is **enforced, not optional** (protocol §7.3 / D019). The receiver MUST track the expected next `seq` per direction and reject any duplicate, rollback, or gap *before* calling `open()`.
 
-**Residual (accepted, out of scope):** because any bad frame tears the link down, an active
-proxy can force a reconnect by injecting a single duplicate/malformed frame — a
-denial-of-service lever. We accept a clean teardown over a silently desynchronized stream;
-availability is explicitly out of scope.
+Under the chosen **teardown-and-rehandshake** policy, any such ordering fault — or any authentication failure (bad tag / AAD mismatch) — aborts the link and forces a fresh handshake; the receiver never skips a `seq` or resyncs a suspect context.
+
+(The stateful HPKE context also fails closed on an already-consumed frame, but that is a side effect that desynchronizes the stream, not the primary check.)
+
+**Residual (accepted, out of scope):** because any bad frame tears the link down, an active proxy can force a reconnect by injecting a single duplicate/malformed frame — a denial-of-service lever. We accept a clean teardown over a silently desynchronized stream; availability is explicitly out of scope.
+
 ---
-
 
 ## Known Limitations
 
@@ -247,25 +237,37 @@ The echo server decrypts the prompt by design. This project addresses intermedia
 
 The browser-side encryption depends on honest JavaScript. A compromised frontend server, malicious script injection, compromised npm dependency, browser extension, or build pipeline compromise could read the prompt before encryption.
 
+Red-team testing confirmed that modified browser-side code can access plaintext before HPKE encryption occurs.
+
 HPKE does not protect against malicious code running in the browser.
 
 ### Server Logs Can Still Leak Plaintext
 
-Plaintext may appear in request body logs, debug output, error logs, crash dumps, or console output after HPKE decryption. The demo should verify that plaintext appears only where expected.
+Plaintext may appear in request body logs, debug output, error logs, crash dumps, or console output after HPKE decryption.
+
+The demo should verify that plaintext appears only where expected.
 
 ### Root and Admin Access Remain Powerful
 
-Anyone with root access to the server or sufficient access to the runtime can potentially read plaintext from memory after decryption. This includes the host OS, cloud provider administrators, and co-located processes with sufficient privilege.
+Anyone with root access to the server or sufficient access to the runtime can potentially read plaintext from memory after decryption.
+
+This includes the host OS, cloud provider administrators, and co-located processes with sufficient privilege.
 
 HPKE does not protect against this threat.
 
 ### Key Management Is Demo-Level
 
-The key-pinning handshake is useful for demonstrating key authenticity, but it is not a full production key-management system. Production systems would need stronger decisions around provisioning, rotation, revocation, storage, and user/device identity. Because identity keys are static (D009), there is **no forward secrecy against long-term-key compromise** in either direction; adding per-epoch ephemeral recipient keys is future work.
+The key-pinning handshake is useful for demonstrating key authenticity, but it is not a full production key-management system.
+
+Production systems would need stronger decisions around provisioning, rotation, revocation, storage, and user/device identity.
+
+Because identity keys are static (D009), there is **no forward secrecy against long-term-key compromise** in either direction; adding per-epoch ephemeral recipient keys is future work.
 
 ### Metadata Is Still Visible
 
-TLS and HPKE hide payload contents, but they do not hide all metadata. Observers may still see:
+TLS and HPKE hide payload contents, but they do not hide all metadata.
+
+Observers may still see:
 
 * IP addresses
 * Ports
@@ -274,6 +276,8 @@ TLS and HPKE hide payload contents, but they do not hide all metadata. Observers
 * Payload sizes
 * Message counts
 * Whether a user is communicating with the service
+
+Red-team observation confirmed that HPKE protected message contents but did not conceal connection timing, ciphertext size, or message count.
 
 Traffic analysis is still possible.
 
@@ -312,14 +316,19 @@ These are important security problems, but they are separate from the narrow cla
 
 ### Confidentiality
 
-Confidentiality is the primary goal. The demo shows how HPKE inside TLS changes what a TLS-terminating intermediary can see. In TLS-only mode, mitmproxy can inspect plaintext WebSocket frames. In TLS + HPKE mode, mitmproxy should see only encrypted HPKE payloads.
+Confidentiality is the primary goal. The demo shows how HPKE inside TLS changes what a TLS-terminating intermediary can see.
+
+In TLS-only mode, mitmproxy can inspect plaintext WebSocket frames.
+
+In TLS + HPKE mode, mitmproxy should see only encrypted HPKE payloads.
 
 ### Integrity
 
-Integrity is tested through active attacker cases. Because HPKE uses authenticated encryption, modified ciphertext should fail authentication instead of producing corrupted plaintext.
+Integrity is tested through active attacker cases.
+
+Because HPKE uses authenticated encryption, modified ciphertext should fail authentication instead of producing corrupted plaintext.
 
 Sequence numbers and associated data detect replay, reordering, reflection, and frame-type confusion; the receiver enforces them (mandatory `seq` tracking + teardown, and `SESSION_ID`/`DIRECTION`/`TYPE` bound in AAD — protocol §3 / §7.3, D019/D020).
-
 
 ### Availability
 
@@ -329,22 +338,22 @@ Availability is not addressed. The system may still be vulnerable to flooding, m
 
 ## Expected Demo Evidence
 
-| Scenario                                | Expected Observation                                                |
-| --------------------------------------- | ------------------------------------------------------------------- |
-| TLS-only with passive sniffer           | Prompt not visible; encrypted TLS records only                      |
-| TLS-only with mitmproxy trusted CA      | Prompt visible in plaintext WebSocket frame                         |
+| Scenario                                | Expected Observation                                                                                  |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| TLS-only with passive sniffer           | Prompt not visible; encrypted TLS records only                                                        |
+| TLS-only with mitmproxy trusted CA      | Prompt visible in plaintext WebSocket frame                                                           |
 | TLS + HPKE with mitmproxy trusted CA    | Handshake frame shows `{ enc, sig }`; message frames show `{ seq, ct }`; prompt plaintext not visible |
-| TLS + HPKE echo reply through mitmproxy | Reply message frame shows `{ seq, ct }`; prompt plaintext not visible |
-| Echo server after HPKE open             | Prompt visible to the intended server process                       |
-| Tampered HPKE ciphertext                | Authentication failure; no corrupted plaintext echoed               |
-| Replayed valid request                  | Rejected (enforced): `seq` gate fails, link torn down, fresh handshake required (D019) |
-| Server logs                             | Plaintext should not appear in unexpected logs                      |
+| TLS + HPKE echo reply through mitmproxy | Reply message frame shows `{ seq, ct }`; prompt plaintext not visible                                 |
+| Echo server after HPKE open             | Prompt visible to the intended server process                                                         |
+| Tampered HPKE ciphertext                | Authentication failure; no corrupted plaintext echoed                                                 |
+| Replayed valid request                  | Rejected (enforced): `seq` gate fails, link torn down, fresh handshake required (D019)                |
+| Server logs                             | Plaintext should not appear in unexpected logs                                                        |
 
 ---
 
 ## Final Security Claim
 
-This project demonstrates that application-layer encryption can reduce plaintext exposure at trusted TLS termination points, such as reverse proxies, gateways, WAFs, load balancers, and inspection tools.
+This project demonstrates that application-layer encryption can reduce plaintext exposure at TLS-terminating intermediaries, such as reverse proxies, gateways, WAFs, load balancers, and inspection tools.
 
 The design is useful because it shows that TLS alone does not define the full plaintext boundary in modern deployments.
 

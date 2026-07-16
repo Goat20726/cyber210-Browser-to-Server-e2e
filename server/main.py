@@ -103,7 +103,7 @@ async def ws_hpke(websocket: WebSocket):
     except ProtocolError as e:
         print(f"[protocol] {e}")
         try:
-            await websocket.close(code=4001, reason=str(e)[:100])
+            await websocket.close(code=4001, reason="protocol error")
         except Exception:
             pass
     except Exception as e:

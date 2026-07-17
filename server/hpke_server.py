@@ -56,12 +56,29 @@ def b64url_encode(data: bytes) -> str:
 
 
 def b64url_decode(s: str) -> bytes:
-    """base64url decode; re-pad missing = (§6)."""
-    s = str(s)
-    pad = 4 - len(s) % 4
-    if pad != 4:
-        s += "=" * pad
-    return base64.urlsafe_b64decode(s)
+    """Strict canonical base64url decoder without padding (§6)."""
+    if not isinstance(s, str) or not s:
+        raise ValueError("invalid base64url")
+
+    allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    if any(c not in allowed for c in s):
+        raise ValueError("invalid base64url")
+
+    padded = s + "=" * ((4 - len(s) % 4) % 4)
+
+    try:
+        decoded = base64.b64decode(
+            padded,
+            altchars=b"-_",
+            validate=True,
+        )
+    except Exception as e:
+        raise ValueError("invalid base64url") from e
+
+    if b64url_encode(decoded) != s:
+        raise ValueError("non-canonical base64url")
+
+    return decoded
 
 
 def seq_to_hex(seq: int) -> str:
@@ -277,22 +294,24 @@ class ServerSession:
             raise ProtocolError(f"msg received in wrong phase: {self.phase}")
 
         # Issue 1 fix: validate seq format before parsing
-        seq_hex = frame.get("seq", "")
-        if not isinstance(seq_hex, str) or len(seq_hex) != 16:
-            raise ProtocolError("invalid seq: must be 16-char hex string")
-        try:
-            seq = hex_to_seq(seq_hex)
-        except ValueError:
-            raise ProtocolError("invalid seq: non-hex characters")
-
-        # Issue 2 fix: validate ct field before decoding
-        ct_b64 = frame.get("ct", "")
-        if not isinstance(ct_b64, str) or len(ct_b64) == 0:
+        seq_hex = frame.get("seq")
+        if (
+            not isinstance(seq_hex, str)
+            or len(seq_hex) != 16:
+            or any(c not in "0123456789abcdef" for c in seq_hex)
+        ):
+            raise ProtocolError("invalid seq")
+        
+        seq = hex_to_seq(seq_hex)
+        ct_b64 = frame.get("ct")
+        if not isinstance(ct_b64, str) or not ct_b64:
             raise ProtocolError("invalid ct: missing or empty")
         try:
             ct = b64url_decode(ct_b64)
-        except Exception:
-            raise ProtocolError("invalid ct: malformed base64url encoding")e
+        except ValueError as e:
+            raise ProtocolError("invalid ct: malformed base64url encoding") from e
+        if len(ct) < 16:
+            raise ProtocolError("invalid ct: too short")
 
         # seq gate (D019): reject duplicate/rollback/gap
         if seq != self._expected_c2s:
@@ -300,10 +319,12 @@ class ServerSession:
                 f"seq gate: expected {self._expected_c2s:#018x}, got {seq:#018x}"
             )
 
-        aad       = make_aad(DIR_C2S, self._session_id, seq)
-        plaintext = self._recipient_ctx_c2s.open(ct, aad=aad)
-        self._expected_c2s += 1
-        return plaintext
+        aad = make_aad(DIR_C2S, self._session_id, seq)
+
+        try:
+            plaintext = self._recipient_ctx_c2s.open(ct, aad=aad)
+        except Exception as e:
+            raise ProtocolError("ciphertext authentication failed") from e
 
     def seal_reply(self, plaintext: bytes) -> dict:
         """Seal a server→browser reply (§5.4, §7.2). Returns ready-to-send frame dict."""

@@ -292,7 +292,7 @@ class ServerSession:
         try:
             ct = b64url_decode(ct_b64)
         except Exception:
-            raise ProtocolError("invalid ct: malformed base64url encoding")e
+            raise ProtocolError("invalid ct: malformed base64url encoding")
 
         # seq gate (D019): reject duplicate/rollback/gap
         if seq != self._expected_c2s:

@@ -13,9 +13,9 @@ Endpoints:
 import json
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware
 
 from hpke_server import (
     ServerKeys, ServerSession, ProtocolError,
@@ -25,7 +25,7 @@ from hpke_server import (
 load_dotenv()
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"])  # demo only
 SERVER_KEYS: ServerKeys = load_server_keys()
 
 
@@ -94,6 +94,13 @@ async def ws_hpke(websocket: WebSocket):
             elif session.phase == "ESTABLISHED":
                 if frame_type != "msg":
                     raise ProtocolError(f"expected msg in ESTABLISHED, got {frame_type!r}")
+                # 'text' vs 'ct' discriminator: the secure channel carries ONLY
+                # sealed message blocks. A 'text' (plaintext) frame here means
+                # the sender fell out of E2E — kill this session so the client
+                # must re-establish a brand-new secure connection (fresh
+                # handshake, fresh HPKE contexts). Never echo plaintext on /ws.
+                if "text" in frame or "ct" not in frame:
+                    raise ProtocolError("plaintext frame on secure channel — new secure connection required")
                 plaintext = session.handle_msg(frame)
                 reply     = session.seal_reply(b"ECHO: " + plaintext)
                 await websocket.send_text(json.dumps(reply))
@@ -103,7 +110,9 @@ async def ws_hpke(websocket: WebSocket):
     except ProtocolError as e:
         print(f"[protocol] {e}")
         try:
-            await websocket.close(code=4001, reason=str(e)[:100])
+            # Surface the fault class in the close reason (≤123 bytes) so the
+            # client can auto-re-establish on the plaintext-on-secure case.
+            await websocket.close(code=4001, reason=str(e)[:120] or "protocol error")
         except Exception:
             pass
     except Exception as e:
@@ -121,11 +130,46 @@ async def ws_plain(websocket: WebSocket):
     """
     Plaintext echo — no HPKE.
     mitmproxy sees the prompt in cleartext: demonstrates TLS-alone limitation.
+
+    Message blocks mirror the secure channel but use 'text' where /ws uses 'ct':
+      client → {"type":"msg", "seq": N, "text": "..."}
+      server → {"type":"msg", "seq": N, "text": "ECHO: ...", "plaintext": true}
+
+    Invariants:
+      * A frame carrying 'ct' (or missing 'text') is rejected — close 4002.
+        Sealed traffic belongs on /ws only; this keeps the two modes disjoint.
+      * An echo is emitted ONLY in direct response to a received plaintext
+        transmit (transmits_seen gate) — the server never originates a
+        plaintext echo the client didn't ask for.
     """
     await websocket.accept()
+    transmits_seen = 0
     try:
         while True:
-            text = await websocket.receive_text()
-            await websocket.send_text(f"ECHO: {text}")
+            raw = await websocket.receive_text()
+            try:
+                frame = json.loads(raw)
+            except Exception:
+                await websocket.close(code=4002, reason="malformed frame: expected JSON message block")
+                return
+            if (
+                not isinstance(frame, dict)
+                or frame.get("type") != "msg"
+                or "ct" in frame
+                or not isinstance(frame.get("text"), str)
+            ):
+                await websocket.close(code=4002, reason="plain endpoint accepts only 'text' message blocks")
+                return
+
+            transmits_seen += 1
+            if transmits_seen < 1:
+                # Defensive: no plaintext echo may leave without a transmit first.
+                continue
+            await websocket.send_text(json.dumps({
+                "type": "msg",
+                "seq": frame.get("seq", 0),
+                "text": f"ECHO: {frame['text']}",
+                "plaintext": True,
+            }))
     except WebSocketDisconnect:
         pass

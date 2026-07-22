@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">EchoVault : Securing Data Channel</title>
+  <desc id="desc">Architecture diagram separating the source-code delivery channel from the HPKE-protected data channel and showing how active code injection can capture plaintext before encryption.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111d"/>
+      <stop offset="1" stop-color="#020812"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1827"/>
+      <stop offset="1" stop-color="#08111c"/>
+    </linearGradient>
+    <linearGradient id="purplePanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#21142e"/>
+      <stop offset="1" stop-color="#111222"/>
+    </linearGradient>
+    <linearGradient id="coralBadge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff8a77"/>
+      <stop offset="1" stop-color="#ff5f55"/>
+    </linearGradient>
+    <linearGradient id="tealBadge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#69e0d6"/>
+      <stop offset="1" stop-color="#24b9ae"/>
+    </linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowCoral" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#ff6b5e"/>
+    </marker>
+    <marker id="arrowCoralStart" markerWidth="12" markerHeight="12" refX="2" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M12,0 L0,6 L12,12 Z" fill="#ff6b5e"/>
+    </marker>
+    <marker id="arrowTeal" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#43d3c8"/>
+    </marker>
+    <marker id="arrowTealStart" markerWidth="12" markerHeight="12" refX="2" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M12,0 L0,6 L12,12 Z" fill="#43d3c8"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#f5a20a"/>
+    </marker>
+    <marker id="arrowOrangeStart" markerWidth="12" markerHeight="12" refX="2" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M12,0 L0,6 L12,12 Z" fill="#f5a20a"/>
+    </marker>
+    <marker id="arrowPink" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#ff7290"/>
+    </marker>
+    <marker id="arrowPinkStart" markerWidth="11" markerHeight="11" refX="2" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M11,0 L0,5.5 L11,11 Z" fill="#ff7290"/>
+    </marker>
+    <style>
+      .sans { font-family: Inter, "Segoe UI", Arial, sans-serif; }
+      .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+      .white { fill: #f4f7fb; }
+      .muted { fill: #aeb9ca; }
+      .coral { fill: #ff7466; }
+      .teal { fill: #43d3c8; }
+      .purple { fill: #b35cff; }
+      .orange { fill: #f5a20a; }
+      .pink { fill: #ff7290; }
+      .green { fill: #86e545; }
+      .label { font-size: 15px; font-weight: 600; letter-spacing: 1.2px; }
+      .body { font-size: 17px; }
+      .bodySmall { font-size: 15px; }
+      .nodeTitle { font-size: 22px; font-weight: 650; }
+      .laneTitle { font-size: 24px; font-weight: 700; letter-spacing: .2px; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+
+  <!-- Header -->
+  <text x="52" y="55" class="sans white" font-size="34" font-weight="650">EchoVault : Securing Data Channel</text>
+
+  <!-- Research question -->
+  <rect x="50" y="101" width="1500" height="72" rx="14" fill="#0d1728" stroke="#40516b" stroke-width="1.6"/>
+  <text x="78" y="126" class="sans muted label">RESEARCH QUESTION</text>
+  <text x="78" y="157" class="sans white" font-size="20">How does application-layer HPKE change what a TLS-terminating intermediary can see compared with TLS alone?</text>
+
+  <!-- Source-code delivery channel -->
+  <rect x="50" y="188" width="1500" height="253" rx="16" fill="#07131f" stroke="#ff675c" stroke-width="1.6"/>
+  <circle cx="86" cy="220" r="21" fill="url(#coralBadge)"/>
+  <text x="86" y="228" text-anchor="middle" class="sans" font-size="24" font-weight="800" fill="#07111d">1</text>
+  <text x="119" y="228" class="sans coral laneTitle">SOURCE-CODE DELIVERY CHANNEL</text>
+
+  <!-- Source browser -->
+  <rect x="98" y="239" width="326" height="124" rx="16" fill="url(#panel)" stroke="#43d3c8" stroke-width="2"/>
+  <circle cx="133" cy="271" r="15" fill="#43d3c8" filter="url(#softGlow)"/>
+  <text x="166" y="282" class="sans teal nodeTitle">Browser application</text>
+  <text x="261" y="316" text-anchor="middle" class="sans white" font-size="16">Initiates request to Next.js</text>
+  <text x="261" y="340" text-anchor="middle" class="sans white" font-size="16">Receives code that performs HPKE</text>
+
+  <!-- Source route arrow one -->
+  <line x1="438" y1="303" x2="660" y2="303" stroke="#ff6b5e" stroke-width="4.5" marker-start="url(#arrowCoralStart)" marker-end="url(#arrowCoral)"/>
+  <text x="549" y="269" text-anchor="middle" class="sans coral" font-size="15" font-weight="650">TLS 1.3 / HTTPS</text>
+  <text x="549" y="290" text-anchor="middle" class="sans coral" font-size="15" font-weight="650">ends at mitmproxy</text>
+
+  <!-- Source proxy -->
+  <rect x="674" y="239" width="286" height="124" rx="16" fill="url(#purplePanel)" stroke="#a95cff" stroke-width="2"/>
+  <circle cx="714" cy="271" r="15" fill="#a95cff" filter="url(#softGlow)"/>
+  <text x="751" y="282" class="sans purple nodeTitle">mitmproxy</text>
+  <text x="817" y="318" text-anchor="middle" class="sans white body">Can inspect or replace</text>
+  <text x="817" y="341" text-anchor="middle" class="sans white body">delivered JavaScript</text>
+
+  <!-- Source route arrow two -->
+  <line x1="974" y1="303" x2="1161" y2="303" stroke="#ff6b5e" stroke-width="4.5" marker-start="url(#arrowCoralStart)" marker-end="url(#arrowCoral)"/>
+  <text x="1068" y="283" text-anchor="middle" class="sans coral" font-size="15" font-weight="650">Internal HTTP :3000</text>
+
+  <!-- Source server -->
+  <rect x="1175" y="239" width="326" height="124" rx="16" fill="url(#panel)" stroke="#ff675c" stroke-width="2"/>
+  <circle cx="1213" cy="271" r="15" fill="#ff675c" filter="url(#softGlow)"/>
+  <text x="1245" y="278" class="sans coral" font-size="19" font-weight="650">Next.js client server</text>
+  <text x="1245" y="301" class="sans coral" font-size="19" font-weight="650">:3000</text>
+  <text x="1338" y="334" text-anchor="middle" class="sans white" font-size="16">Returns application code (JavaScript)</text>
+
+  <!-- Active injection path -->
+  <path d="M350 362 V399 H626" fill="none" stroke="#ff675c" stroke-width="3" stroke-dasharray="5 6"/>
+  <path d="M994 399 H1338 V363" fill="none" stroke="#ff675c" stroke-width="3" stroke-dasharray="5 6"/>
+  <rect x="626" y="371" width="368" height="57" rx="12" fill="#0b121c" stroke="#ff675c" stroke-width="1.8"/>
+  <text x="810" y="398" text-anchor="middle" class="sans coral" font-size="19" font-weight="800">ACTIVE CODE INJECTION</text>
+  <text x="810" y="419" text-anchor="middle" class="sans white" font-size="16">Capture plaintext before HPKE sealing</text>
+
+  <!-- Data channel -->
+  <rect x="50" y="458" width="1500" height="231" rx="16" fill="#06151c" stroke="#28b9b1" stroke-width="1.6"/>
+  <circle cx="86" cy="491" r="21" fill="url(#tealBadge)"/>
+  <text x="86" y="499" text-anchor="middle" class="sans" font-size="24" font-weight="800" fill="#07111d">2</text>
+  <text x="119" y="499" class="sans teal laneTitle">DATA CHANNEL</text>
+
+  <!-- Data browser -->
+  <rect x="98" y="510" width="318" height="116" rx="16" fill="url(#panel)" stroke="#43d3c8" stroke-width="2"/>
+  <circle cx="133" cy="538" r="14" fill="#43d3c8" filter="url(#softGlow)"/>
+  <text x="166" y="549" class="sans teal nodeTitle">Browser application</text>
+  <text x="122" y="584" class="sans white body">Plaintext → seal request</text>
+  <text x="122" y="610" class="sans white body">Open reply → plaintext</text>
+
+  <!-- Browser/proxy data route -->
+  <line x1="438" y1="558" x2="615" y2="558" stroke="#43d3c8" stroke-width="4.5" marker-start="url(#arrowTealStart)" marker-end="url(#arrowTeal)"/>
+  <text x="526" y="535" text-anchor="middle" class="sans teal" font-size="17" font-weight="600">TLS 1.3 / WSS</text>
+
+  <!-- HPKE seal carried inside TLS -->
+  <g aria-label="HPKE ciphertext remains sealed inside TLS">
+    <path d="M512 577 H540 V590 C540 599 534 606 526 610 C518 606 512 599 512 590 Z" fill="#132812" stroke="#86e545" stroke-width="2"/>
+    <path d="M521 590 V586 C521 579 531 579 531 586 V590" fill="none" stroke="#86e545" stroke-width="2" stroke-linecap="round"/>
+    <rect x="519" y="589" width="14" height="11" rx="2" fill="#86e545"/>
+    <circle cx="526" cy="594" r="1.6" fill="#132812"/>
+    <text x="526" y="625" text-anchor="middle" class="sans green" font-size="14" font-weight="800" letter-spacing=".8">SEALED</text>
+  </g>
+
+  <!-- Data proxy -->
+  <rect x="625" y="502" width="304" height="124" rx="16" fill="url(#purplePanel)" stroke="#a95cff" stroke-width="2"/>
+  <circle cx="659" cy="532" r="14" fill="#a95cff" filter="url(#softGlow)"/>
+  <text x="694" y="543" class="sans purple nodeTitle">mitmproxy</text>
+  <text x="654" y="580" class="sans white body">E2E OFF: plaintext</text>
+  <text x="654" y="606" class="sans white body">E2E ON: ciphertext + metadata</text>
+
+  <!-- Proxy/server data route -->
+  <line x1="951" y1="558" x2="1160" y2="558" stroke="#f5a20a" stroke-width="4.5" marker-start="url(#arrowOrangeStart)" marker-end="url(#arrowOrange)"/>
+  <text x="1055" y="511" text-anchor="middle" class="sans orange" font-size="16" font-weight="600">Internal WebSocket •</text>
+  <text x="1055" y="532" text-anchor="middle" class="sans orange" font-size="16" font-weight="600">non-TLS tested hop</text>
+
+  <!-- HPKE seal carried through the proxy -->
+  <g aria-label="HPKE ciphertext remains sealed after TLS termination">
+    <path d="M1041 577 H1069 V590 C1069 599 1063 606 1055 610 C1047 606 1041 599 1041 590 Z" fill="#132812" stroke="#86e545" stroke-width="2"/>
+    <path d="M1050 590 V586 C1050 579 1060 579 1060 586 V590" fill="none" stroke="#86e545" stroke-width="2" stroke-linecap="round"/>
+    <rect x="1048" y="589" width="14" height="11" rx="2" fill="#86e545"/>
+    <circle cx="1055" cy="594" r="1.6" fill="#132812"/>
+    <text x="1055" y="625" text-anchor="middle" class="sans green" font-size="14" font-weight="800" letter-spacing=".8">SEALED</text>
+  </g>
+
+  <!-- Data server -->
+  <rect x="1170" y="492" width="331" height="134" rx="16" fill="url(#panel)" stroke="#f5a20a" stroke-width="2"/>
+  <circle cx="1205" cy="523" r="14" fill="#f5a20a" filter="url(#softGlow)"/>
+  <text x="1238" y="532" class="sans orange" font-size="20" font-weight="650">Intended echo-server</text>
+  <text x="1238" y="557" class="sans orange" font-size="20" font-weight="650">process :8000</text>
+  <text x="1197" y="592" class="sans white body">Open request → echo → seal reply</text>
+  <text x="1197" y="616" class="sans white body">Trusted plaintext endpoint</text>
+
+  <!-- Inner HPKE channel -->
+  <path d="M302 636 C495 690 1090 690 1288 636" fill="none" stroke="#ff7290" stroke-width="3.5" stroke-dasharray="9 8" marker-start="url(#arrowPinkStart)" marker-end="url(#arrowPink)"/>
+  <rect x="590" y="650" width="420" height="28" rx="8" fill="#07131a"/>
+  <text x="800" y="671" text-anchor="middle" class="sans pink" font-size="18" font-weight="700">HPKE protected application channel</text>
+
+  <!-- Main conclusion -->
+  <rect x="50" y="708" width="977" height="134" rx="16" fill="url(#panel)" stroke="#ff675c" stroke-width="2"/>
+  <text x="101" y="747" class="sans coral" font-size="23" font-weight="700">Protecting the data channel is not enough when the</text>
+  <text x="101" y="778" class="sans coral" font-size="23" font-weight="700">adversary can control the code that creates the ciphertext.</text>
+  <text x="101" y="811" class="sans white" font-size="17">HPKE protects messages at the TLS terminator only while the browser’s</text>
+  <text x="101" y="834" class="sans white" font-size="17">encryption code remains trusted.</text>
+
+  <!-- Trust restoration -->
+  <rect x="1051" y="708" width="499" height="134" rx="16" fill="url(#panel)" stroke="#2cbab0" stroke-width="2"/>
+  <text x="1084" y="746" class="sans teal" font-size="23" font-weight="700" letter-spacing="1">TRUST RESTORATION</text>
+  <text x="1084" y="777" class="sans white" font-size="16">Use a locally packaged or independently pinned</text>
+  <text x="1084" y="801" class="sans white" font-size="16">client to remove mutable code delivery from</text>
+  <text x="1084" y="825" class="sans white" font-size="16">the intermediary.</text>
+
+  <!-- Footer -->
+  <text x="800" y="878" text-anchor="middle" class="mono muted" font-size="15">HPKE base mode • pinned Ed25519 server authentication • X25519 • HKDF-SHA256 • ChaCha20-Poly1305</text>
+</svg>

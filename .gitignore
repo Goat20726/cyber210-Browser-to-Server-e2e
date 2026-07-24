@@ -52,5 +52,4 @@ data/
 nextcloud_sync.sh
 node_modules/
 .next/
-echovault-deploy/
 *.tar

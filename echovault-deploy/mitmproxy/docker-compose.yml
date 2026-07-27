@@ -14,11 +14,12 @@ services:
     #
     # We listen on 8080 INSIDE the container and publish it as host :443, so we
     # never need to bind a privileged port inside the container.
-    command: >
+   command: >
       mitmweb
       --mode reverse:http://client:3000
       --certs /certs/echovault.pem
       -s /addons/route.py
+      -s /addons/tamper_client_code.py
       --listen-host 0.0.0.0
       --listen-port 8080
       --web-host 0.0.0.0
@@ -28,13 +29,14 @@ services:
       --set keep_host_header=true
       --set connection_strategy=lazy
     ports:
-      - "443:8080"    # HTTPS entrypoint → browse https://echo.client.test
-      - "8081:8081"   # mitmweb UI       → http://<box-ip>:8081 (password above)
+      - "443:8080"    # HTTPS entrypoint  ^f^r browse https://echo.client.test
+      - "8081:8081"   # mitmweb UI        ^f^r http://<box-ip>:8081 (password above)
     tty: true
     stdin_open: true
     volumes:
       - ./certs:/certs:ro          # echovault.pem (TLS) + ca.crt live here
       - ./route.py:/addons/route.py:ro
+      - ./tamper_client_code.py:/addons/tamper_client_code.py:ro
     networks:
       - proxynet
 
